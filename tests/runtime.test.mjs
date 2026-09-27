@@ -5,7 +5,7 @@ import { runInNewContext } from "node:vm";
 
 const bundle = await readFile(new URL("../dist/code.js", import.meta.url), "utf8");
 
-test("Start batches only final missing recommendation ratings and reuses cache", () => {
+test("isolated Seanime UI handler loads and Start reuses cached recommendation ratings", () => {
   const cache = new Map(), factories = new Map(), handlers = new Map();
   const scheduled = [];
   let html = "", batches = [], collectionCalls = 0, renderFn = null, rendered = null;
@@ -30,11 +30,10 @@ test("Start batches only final missing recommendation ratings and reuses cache",
     newWebview: () => ({ setContent(fn) { this.content = fn; }, update() { html = this.content(); }, show() {}, hide() {}, onUnmount() {}, channel: { on() {} } }),
     continuity: { getWatchHistory: () => ({}) }, toast: { warning() {}, info() {}, error(message) { throw new Error(message); } }
   };
-  runInNewContext(bundle + "\ninit();", {
+  const runtimeGlobals = {
     console,
     $shared: { define: (key, fn) => factories.set(key, fn), use: (key) => factories.get(key)() },
     $storage: { get: (key) => cache.get(key), set: (key, value) => cache.set(key, value), remove: (key) => cache.delete(key) },
-    $ui: { register: (fn) => fn(ctx) },
     $anilist: {
       getRawAnimeCollection: () => { collectionCalls++; return { MediaListCollection: { lists: [{ entries }] } }; },
       getAnimeDetails: () => ({ studios: { nodes: [] } }),
@@ -45,7 +44,11 @@ test("Start batches only final missing recommendation ratings and reuses cache",
         return { Page: { media: variables.ids.map((id) => ({ id, meanScore: id === 3 ? null : 84 })) } };
       }
     }
-  });
+  };
+  runtimeGlobals.$ui = {
+    register: (fn) => runInNewContext(`(${fn.toString()})(ctx)`, { ...runtimeGlobals, ctx })
+  };
+  assert.doesNotThrow(() => runInNewContext(bundle + "\ninit();", runtimeGlobals));
   assert.equal(collectionCalls, 0, "opening the tray must not load data");
   handlers.get("seanime-wrapped-start")();
   handlers.get("seanime-wrapped-start")();

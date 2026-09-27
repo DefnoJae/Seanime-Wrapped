@@ -1,7 +1,7 @@
 // Optional browser regression: node scripts/verify-viewer.mjs [Playwright package path]
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { createDomain } from "../src/domain.ts";
 import { createViewer } from "../src/viewer.ts";
 const { chromium } = createRequire(import.meta.url)(process.argv[2] || "playwright");
@@ -17,19 +17,16 @@ const entries = Array.from({ length: 15 }, (_, i) => ({
 const domain = createDomain();
 const session = domain.buildSession(domain.normalizeCollection({ MediaListCollection: { lists: [{ entries }] } }, {}), {}, [], settings, now);
 const html = createViewer().documentFor({ session, settings });
-const icon = await readFile(new URL("../assets/icon.png", import.meta.url));
 const errors = [];
 try {
   for (const [width, height] of [[1440, 900], [1920, 1080]]) {
     const page = await browser.newPage({ viewport: { width, height }, reducedMotion: "reduce" });
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.route("http**/*", (route) => route.request().url().endsWith("/assets/icon.png")
-      ? route.fulfill({ status: 200, contentType: "image/png", body: icon })
-      : route.abort());
+    await page.route("http**/*", (route) => route.abort());
     await page.setContent(html);
     await page.locator(".loading.hidden").waitFor();
     assert.equal(await page.locator("#app").evaluate((el) => el === document.activeElement), true);
-    assert.ok(await page.locator(".brand-icon").first().evaluate((el) => el.naturalWidth > 0));
+    assert.equal(await page.locator(".brand .logo i").count(), 4);
     assert.equal(await page.locator("#mute").count(), 0);
     const seen = [];
     const ranks = [];

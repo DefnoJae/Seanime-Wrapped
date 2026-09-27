@@ -49,13 +49,18 @@ test("tray requests Seanime's drawer presentation", () => {
   assert.match(indexSource, /newTray\(\{[^}]*isDrawer:\s*true/);
 });
 
-test("official PNG icon uses a public raw-GitHub path in the manifest, tray, and viewer", async () => {
-  const expected = "https://raw.githubusercontent.com/DefnoJae/Seanime-Wrapped/main/assets/icon.png";
-  assert.equal(manifest.icon, expected);
-  assert.match(viewerSource, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-  assert.match(indexSource, /iconUrl: icon/);
+test("marketplace, viewer, and tray keep independent icon assignments", async () => {
+  const trayPng = "https://raw.githubusercontent.com/DefnoJae/Seanime-Wrapped/main/assets/icon.png";
+  const marketplaceSvg = "https://raw.githubusercontent.com/DefnoJae/Seanime-Wrapped/main/assets/icon.svg";
+  assert.equal(manifest.icon, marketplaceSvg);
+  assert.match(indexSource, new RegExp(`const trayIconUrl = "${trayPng.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`));
+  assert.match(indexSource, /newTray\(\{ iconUrl: trayIconUrl/);
+  assert.match(indexSource, /tray\.img\(trayIconUrl/);
   assert.ok((await stat(new URL("../assets/icon.png", import.meta.url))).size > 0);
-  assert.doesNotMatch(indexSource + viewerSource, /data:image\/png;base64/i);
+  assert.ok((await stat(new URL("../assets/icon.svg", import.meta.url))).size > 0);
+  assert.match(viewerSource, /<span class="logo" aria-hidden="true"><i><\/i><i><\/i><i><\/i><i><\/i><\/span>/);
+  assert.doesNotMatch(viewerSource, /icon\.png|brand-icon|WRAPPED_ICON_URL/);
+  assert.doesNotMatch(indexSource + viewerSource, /WRAPPED_ICON_URL|data:image\/png;base64/i);
 });
 
 test("generation drawer shows staged progress and disables duplicate starts", () => {

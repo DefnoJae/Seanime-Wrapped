@@ -1,5 +1,5 @@
 import { createDomain, type MediaRecord, type StudioMetadata, type WrappedDomain, type WrappedSession, type WrappedSettings } from "./domain";
-import { createViewer, WRAPPED_ICON_URL, type WrappedViewer } from "./viewer";
+import { createViewer, type WrappedViewer } from "./viewer";
 
 declare const console: { error(...args: unknown[]): void; warn(...args: unknown[]): void };
 
@@ -20,7 +20,9 @@ function init() {
     const DEBUG_SCORES = false;
     const LAST_SESSION_KEY = "last-session-v1";
     const LAST_GENERATED_KEY = "last-generated-v1";
-    const icon = WRAPPED_ICON_URL;
+    // UI callbacks run in an isolated Goja scope, so tray-only assets must be
+    // declared inside this callback rather than captured from module scope.
+    const trayIconUrl = "https://raw.githubusercontent.com/DefnoJae/Seanime-Wrapped/main/assets/icon.png";
 
     const defaults: WrappedSettings = {
       period: "month",
@@ -286,7 +288,7 @@ function init() {
       tray.update();
     });
 
-    const tray = ctx.newTray({ iconUrl: icon, withContent: true, isDrawer: true, width: "390px", minHeight: "620px" });
+    const tray = ctx.newTray({ iconUrl: trayIconUrl, withContent: true, isDrawer: true, width: "390px", minHeight: "620px" });
     tray.render(() => {
       return tray.stack([
         tray.css(`
@@ -304,7 +306,7 @@ function init() {
         `),
         tray.div([
           tray.flex([
-            tray.img(icon, { alt: "", width: "42px", height: "42px" }),
+            tray.img(trayIconUrl, { alt: "", width: "42px", height: "42px" }),
             tray.stack([
               tray.text("Seanime Wrapped", { className: "sw-title" }),
               tray.text("Your anime watching, wrapped.", { className: "sw-subtitle" })
