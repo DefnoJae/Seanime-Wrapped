@@ -53,6 +53,18 @@ test("period filtering uses dated watch history and never treats current progres
   assert.match(session.accuracyNote, /Current progress is not presented as period-specific/);
 });
 
+test("period labels and weekday names are deterministic and contain no locale timestamps", () => {
+  const month = domain.periodFor("month", now);
+  const previous = domain.periodFor("previous-month", now);
+  assert.equal(month.label, "September 2026");
+  assert.equal(previous.label, "August 2026");
+  assert.doesNotMatch(month.label + previous.label, /[\/:]|\d{1,2}:\d{2}/);
+
+  const sunday = new Date(2026, 8, 27, 12).getTime();
+  const session = domain.buildSession([media(1, { status: "CURRENT", progress: 1, historyAt: sunday })], {}, [], settings, now);
+  assert.equal(session.activeDay?.label, "Sunday");
+});
+
 test("Top 5 ranking is deterministic and strongest engagement is rank one", () => {
   const historyAt = new Date(2026, 8, 20, 12).getTime();
   const all = Array.from({ length: 7 }, (_, index) => media(index + 1, {
@@ -77,6 +89,23 @@ test("ratings use only the user's score and completion uses completion dates", (
   assert.equal(session.averageScore, 8);
   assert.equal(session.highestRated?.mediaId, 1);
   assert.deepEqual(session.completed.map((item) => item.mediaId), [1]);
+});
+
+test("completed-in-period titles count as watched and their ratings drive the score slides", () => {
+  const september = [5, 12, 19].map((day) => new Date(2026, 8, day, 12).getTime());
+  const all = [9, 8, 7].map((score, index) => media(index + 1, {
+    status: "COMPLETED",
+    progress: 12,
+    completedAt: september[index],
+    userScore: score,
+    historyAt: null,
+    updatedAt: null
+  }));
+  const session = domain.buildSession(all, {}, [], settings, now);
+  assert.equal(session.watched.length, 3);
+  assert.equal(session.completed.length, 3);
+  assert.equal(session.averageScore, 8);
+  assert.equal(session.highestRated?.userScore, 9);
 });
 
 test("POINT_100 collection scores normalize to 0-10 while global meanScore stays POINT_100", () => {

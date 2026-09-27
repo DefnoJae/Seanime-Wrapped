@@ -61,6 +61,13 @@ function init() {
     const volumeRef = ctx.fieldRef(String(settings.volume));
     const autoAdvanceRef = ctx.fieldRef(settings.autoAdvance);
 
+    function formatGeneratedAt(value: string): string {
+      const date = new Date(value);
+      if (!Number.isFinite(date.getTime())) return "an unknown time";
+      const pad = (part: number) => String(part).padStart(2, "0");
+      return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    }
+
     function saveSettings() {
       settings = {
         period: periodRef.current as WrappedSettings["period"],
@@ -197,7 +204,8 @@ function init() {
         }
         const soundtrack = chooseSoundtrack();
         if (settings.soundtrack !== "Off" && !soundtrack.source) ctx.toast.info("No local soundtrack files were found, so this Wrapped will play silently.");
-        viewerHtml = viewerBuilder.documentFor({ session, settings, audioSource: soundtrack.source, audioLabel: soundtrack.label });
+        const viewerSettings = soundtrack.source ? settings : { ...settings, soundtrack: "Off" as const };
+        viewerHtml = viewerBuilder.documentFor({ session, settings: viewerSettings, audioSource: soundtrack.source, audioLabel: soundtrack.label });
         $storage.set(LAST_SESSION_KEY, session);
         $storage.set(LAST_GENERATED_KEY, session.generatedAt);
         lastGenerated.set(session.generatedAt);
@@ -242,7 +250,15 @@ function init() {
     const tray = ctx.newTray({ iconUrl: icon, withContent: true, isDrawer: true, width: "390px", minHeight: "620px" });
     tray.render(() => {
       const currentVolume = Math.max(0, Math.min(100, Number(volumeRef.current) || 0));
-      const availableTracks = Object.keys(audioRegistry);
+      const availableTracks = Object.keys(audioRegistry).filter((label) => Boolean(audioRegistry[label]));
+      const soundtrackControls = availableTracks.length ? tray.stack([
+        tray.select("Track", { fieldRef: soundtrackRef, options: ["Random", "Inferno", "Bling-Bang-Bang-Born", "Otonoke", "Black Catcher", "Off"].map((value) => ({ label: value, value })) }),
+        tray.text(`Local tracks available: ${availableTracks.length}/4`, { className: "sw-note" }),
+        tray.text(`Volume · ${currentVolume}%`, { className: "sw-label" }),
+        tray.flex([0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map((value) => tray.div([
+          tray.button(String(value), { onClick: volumeHandlers[value], size: "xs" })
+        ], { className: value <= currentVolume ? "is-on" : "" })), { className: "sw-volume", gap: 1 })
+      ], { gap: 2 }) : tray.text("No local soundtracks installed", { className: "sw-note" });
       return tray.stack([
         tray.css(`
           .sw-shell{padding:4px}.sw-header{padding:8px 4px 16px;border-bottom:1px solid rgba(255,255,255,.09)}
@@ -282,12 +298,7 @@ function init() {
         ], { className: "sw-section" }),
         tray.div([
           tray.text("Soundtrack", { className: "sw-label" }),
-          tray.select("Track", { fieldRef: soundtrackRef, options: ["Random", "Inferno", "Bling-Bang-Bang-Born", "Otonoke", "Black Catcher", "Off"].map((value) => ({ label: value, value })) }),
-          tray.text(`Local tracks available: ${availableTracks.length}/4`, { className: "sw-note" }),
-          tray.text(`Volume · ${currentVolume}%`, { className: "sw-label" }),
-          tray.flex([0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map((value) => tray.div([
-            tray.button(String(value), { onClick: volumeHandlers[value], size: "xs" })
-          ], { className: value <= currentVolume ? "is-on" : "" })), { className: "sw-volume", gap: 1 })
+          soundtrackControls
         ], { className: "sw-section" }),
         tray.div([
           tray.text("Playback", { className: "sw-label" }),
@@ -302,7 +313,7 @@ function init() {
           tray.button("Refresh Data", { onClick: refreshHandler, intent: "gray-subtle" }),
           tray.badge(`${availableTracks.length} soundtrack${availableTracks.length === 1 ? "" : "s"}`, { intent: availableTracks.length ? "success" : "gray", size: "sm" })
         ], { className: "sw-actions", gap: 2 }),
-        tray.text(lastGenerated.get() ? `Last generated ${new Date(lastGenerated.get()).toLocaleString()}` : "No Wrapped generated yet", { className: "sw-note" }),
+        tray.text(lastGenerated.get() ? `Last generated ${formatGeneratedAt(lastGenerated.get())}` : "No Wrapped generated yet", { className: "sw-note" }),
         tray.text("Opening this tray never loads AniList data. Start Wrapped prepares one offline presentation session.", { className: "sw-note" })
       ], { className: "sw-shell", gap: 2 });
     });

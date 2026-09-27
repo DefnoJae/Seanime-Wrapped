@@ -81,6 +81,11 @@ export interface WrappedSession {
 
 export function createDomain() {
   const fallbackArt = "https://raw.githubusercontent.com/DefnoJae/Seanime-Wrapped/main/assets/fallback.svg";
+  const MONTHS = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"
+  ];
+  const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
   function numberOrNull(value: unknown): number | null {
     return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -150,13 +155,13 @@ export function createDomain() {
   function periodFor(key: PeriodKey, nowValue?: number) {
     const now = new Date(nowValue || Date.now());
     const end = now.getTime();
-    const monthName = now.toLocaleString("en", { month: "long" });
+    const monthName = MONTHS[now.getMonth()];
     if (key === "all-time") return { key, label: "All Time", context: "across your anime journey", start: null, end };
     if (key === "month") return { key, label: `${monthName} ${now.getFullYear()}`, context: "this month", start: new Date(now.getFullYear(), now.getMonth(), 1).getTime(), end };
     if (key === "previous-month") {
       const start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
       const stop = new Date(now.getFullYear(), now.getMonth(), 1).getTime() - 1;
-      return { key, label: `${start.toLocaleString("en", { month: "long" })} ${start.getFullYear()}`, context: "that month", start: start.getTime(), end: stop };
+      return { key, label: `${MONTHS[start.getMonth()]} ${start.getFullYear()}`, context: "that month", start: start.getTime(), end: stop };
     }
     if (key === "last-3" || key === "last-6") {
       const months = key === "last-3" ? 3 : 6;
@@ -174,7 +179,15 @@ export function createDomain() {
 
   function selectedMedia(all: MediaRecord[], period: ReturnType<typeof periodFor>): MediaRecord[] {
     if (period.start === null) return all.filter((media) => media.progress > 0 || media.status === "COMPLETED" || media.historyAt !== null);
-    return all.filter((media) => inWindow(media.historyAt, period) || (media.historyAt === null && media.progress > 0 && inWindow(media.updatedAt, period)));
+    const byId: Record<number, MediaRecord> = {};
+    for (const media of all) {
+      const belongs = inWindow(media.historyAt, period)
+        || (media.progress > 0 && inWindow(media.updatedAt, period))
+        || inWindow(media.startedAt, period)
+        || inWindow(media.completedAt, period);
+      if (belongs) byId[media.mediaId] = media;
+    }
+    return Object.keys(byId).map((id) => byId[Number(id)]).sort((a, b) => a.mediaId - b.mediaId);
   }
 
   function completedMedia(all: MediaRecord[], period: ReturnType<typeof periodFor>): MediaRecord[] {
@@ -228,7 +241,7 @@ export function createDomain() {
     const days: Record<string, number> = {};
     for (const media of watched) {
       if (!inWindow(media.historyAt, period)) continue;
-      const label = new Date(media.historyAt!).toLocaleDateString("en", { weekday: "long" });
+      const label = WEEKDAYS[new Date(media.historyAt!).getDay()];
       days[label] = (days[label] || 0) + 1;
     }
     const entries = Object.keys(days).map((label) => ({ label, count: days[label] })).sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
@@ -268,7 +281,10 @@ export function createDomain() {
     const ranked = rankMedia(watched, period);
     const genres = genreStats(watched);
     const studio = topStudio(watched, details);
-    const scored = settings.includeRatings ? watched.filter((media) => media.userScore !== null && media.userScore! > 0) : [];
+    const relevantById: Record<number, MediaRecord> = {};
+    for (const media of [...watched, ...completed]) relevantById[media.mediaId] = media;
+    const relevant = Object.keys(relevantById).map((id) => relevantById[Number(id)]);
+    const scored = settings.includeRatings ? relevant.filter((media) => media.userScore !== null && media.userScore! > 0) : [];
     const averageScore = scored.length ? Math.round((scored.reduce((sum, media) => sum + media.userScore!, 0) / scored.length) * 10) / 10 : null;
     const highestRated = scored.slice().sort((a, b) => b.userScore! - a.userScore! || engagement(b, period) - engagement(a, period) || a.mediaId - b.mediaId)[0] || null;
     const recs = settings.recommendations ? recommend(all, watched, details, discovery, genres, studio?.name || null) : [];
@@ -288,7 +304,7 @@ export function createDomain() {
       version: 1,
       generatedAt: new Date(nowValue || Date.now()).toISOString(),
       period,
-      accuracyNote: "Period membership uses Seanime's latest saved watch-history timestamp when available, otherwise the AniList entry update timestamp. Current progress is not presented as period-specific episode history.",
+      accuracyNote: "Period membership uses dated Seanime watch history plus AniList update, start, and completion dates. Current progress is not presented as period-specific episode history.",
       watched,
       completed,
       topFive: ranked,
