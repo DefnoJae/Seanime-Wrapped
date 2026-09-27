@@ -16,7 +16,19 @@ test("tray open is free of AniList collection calls", () => {
 test("viewer navigation contains no fetch or network API", () => {
   assert.doesNotMatch(viewerSource, /\bfetch\s*\(/);
   assert.doesNotMatch(viewerSource, /XMLHttpRequest|WebSocket/);
-  assert.match(viewerSource, /Promise\.all\(urls\.map/);
+  assert.match(viewerSource, /primeWindow\(0\)\.then/);
+});
+
+test("artwork preload is slide-scoped with a two-slide look-ahead", () => {
+  assert.match(viewerSource, /MAX_PRELOAD_AHEAD=2/);
+  assert.match(viewerSource, /querySelectorAll\('img\[data-src\]'\)/);
+  assert.match(viewerSource, /for\(let offset=0;offset<=MAX_PRELOAD_AHEAD;offset\+\+\)/);
+  assert.doesNotMatch(viewerSource, /S\.watched\.map\(m=>m\.cover\)/);
+  assert.doesNotMatch(viewerSource, /S\.completed\.map\(m=>m\.cover\)/);
+});
+
+test("tray requests Seanime's drawer presentation", () => {
+  assert.match(indexSource, /newTray\(\{[^}]*isDrawer:\s*true/);
 });
 
 test("Top 5 reveal order is reversed to #5 through #1", () => {

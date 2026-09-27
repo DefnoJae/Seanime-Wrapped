@@ -465,6 +465,8 @@ declare namespace $ui {
         iconUrl: string
         /** Whether the tray has content */
         withContent: boolean
+        /** Whether the tray content opens in Seanime's drawer presentation */
+        isDrawer?: boolean
         /** Width of the tray */
         width?: string
         /** Minimum height of the tray */

@@ -9,7 +9,7 @@ Seanime Wrapped is a desktop-first, cinematic personal anime recap for [Seanime]
 - Watched and completed counts, genre breakdown, Top 5, highest user-rated anime, studio affinity, average user score, defensible weekday activity, recommendations, and final summary
 - Top 5 reveals in the order **#5 → #4 → #3 → #2 → #1**, followed by an overview
 - Up to 10 recommendation cards in a 5 × 2 desktop layout
-- Full-screen artwork preload, segmented progress, click/keyboard navigation, pause/resume, reduced-motion support, and deterministic cleanup
+- Slide-scoped artwork loading with a small look-ahead buffer, segmented progress, click/keyboard navigation, pause/resume, reduced-motion support, and deterministic cleanup
 - Optional, private local soundtrack embedding with continuous playback, volume, mute, fade-in, and immediate stop on close
 
 ## Requirements
@@ -96,7 +96,7 @@ Start Wrapped
   ├─ $anilist.getRawAnimeCollection(false)           Seanime cache first
   ├─ $anilist.getAnimeDetails(id)                    at most 15 prioritized IDs; long-lived plugin cache
   └─ $anilist.getAnimeCollectionWithRelations()      only when recommendations need more candidates
-       └─ immutable WrappedSession + artwork preload
+       └─ immutable WrappedSession + bounded slide artwork preload
             └─ slide navigation                     zero API/fetch calls
 ```
 

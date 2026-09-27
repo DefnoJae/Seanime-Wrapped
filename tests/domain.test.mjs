@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createDomain } from "../src/domain.ts";
+import { createViewer } from "../src/viewer.ts";
 
 const domain = createDomain();
 const now = new Date(2026, 8, 27, 12).getTime();
@@ -76,6 +77,52 @@ test("ratings use only the user's score and completion uses completion dates", (
   assert.equal(session.averageScore, 8);
   assert.equal(session.highestRated?.mediaId, 1);
   assert.deepEqual(session.completed.map((item) => item.mediaId), [1]);
+});
+
+test("POINT_100 collection scores normalize to 0-10 while global meanScore stays POINT_100", () => {
+  const september = new Date(2026, 8, 12, 12).getTime();
+  const collection = {
+    MediaListCollection: {
+      lists: [{ entries: [
+        {
+          score: 90, status: "CURRENT", progress: 8, updatedAt: september / 1000,
+          media: { id: 1, title: { userPreferred: "Ninety" }, meanScore: 94, episodes: 12, genres: ["Action"], coverImage: { large: "https://img.test/1.jpg" }, bannerImage: "https://img.test/1-banner.jpg" }
+        },
+        {
+          score: 70, status: "CURRENT", progress: 4, updatedAt: september / 1000,
+          media: { id: 2, title: { userPreferred: "Seventy" }, meanScore: 71, episodes: 12, genres: ["Drama"], coverImage: { large: "https://img.test/2.jpg" }, bannerImage: "https://img.test/2-banner.jpg" }
+        }
+      ] }]
+    }
+  };
+  const normalized = domain.normalizeCollection(collection, {
+    1: { timeUpdated: september, episodeNumber: 8 },
+    2: { timeUpdated: september, episodeNumber: 4 }
+  });
+  assert.deepEqual(normalized.map((item) => item.userScore), [9, 7]);
+  assert.deepEqual(normalized.map((item) => item.globalScore), [94, 71]);
+
+  const session = domain.buildSession(normalized, {}, [], settings, now);
+  assert.equal(session.highestRated?.userScore, 9);
+  assert.equal(session.averageScore, 8);
+  const html = createViewer().documentFor({ session, settings, audioSource: "", audioLabel: "" });
+  assert.match(html, /"userScore":9/);
+  assert.match(html, /"averageScore":8/);
+  assert.match(html, /"scoreLabels":\{"highestRated":"9\.0","average":"8\.0"\}/);
+  assert.match(html, /INPUT\.scoreLabels\.highestRated\+'<small> \/ 10/);
+  assert.match(html, /INPUT\.scoreLabels\.average===null\?'—':INPUT\.scoreLabels\.average/);
+});
+
+test("all-time sessions keep the hero artwork seed bounded for large libraries", () => {
+  const allTimeSettings = { ...settings, period: "all-time", recommendations: false };
+  const library = Array.from({ length: 500 }, (_, index) => media(index + 1, {
+    status: "CURRENT",
+    progress: index + 1,
+    userScore: 8
+  }));
+  const session = domain.buildSession(library, {}, [], allTimeSettings, now);
+  assert.ok(session.heroArt.length <= 8);
+  assert.ok(session.heroArt.length < library.length);
 });
 
 test("recommendations render ten unique candidates and exclude active/completed/dropped anime", () => {

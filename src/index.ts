@@ -239,7 +239,7 @@ function init() {
       });
     }
 
-    const tray = ctx.newTray({ iconUrl: icon, withContent: true, width: "390px", minHeight: "620px" });
+    const tray = ctx.newTray({ iconUrl: icon, withContent: true, isDrawer: true, width: "390px", minHeight: "620px" });
     tray.render(() => {
       const currentVolume = Math.max(0, Math.min(100, Number(volumeRef.current) || 0));
       const availableTracks = Object.keys(audioRegistry);

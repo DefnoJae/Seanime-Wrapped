@@ -86,6 +86,11 @@ export function createDomain() {
     return typeof value === "number" && Number.isFinite(value) ? value : null;
   }
 
+  function userScoreFromPoint100(value: unknown): number | null {
+    const score = numberOrNull(value);
+    return score === null ? null : Math.max(0, Math.min(10, score / 10));
+  }
+
   function timestamp(value: unknown): number | null {
     if (typeof value === "number" && Number.isFinite(value)) return value > 1e12 ? value : value * 1000;
     if (typeof value !== "string" || !value) return null;
@@ -111,7 +116,9 @@ export function createDomain() {
       color: media?.coverImage?.color || "#8b5cf6",
       genres: Array.isArray(media?.genres) ? media.genres.filter((genre: unknown) => typeof genre === "string") : [],
       globalScore: numberOrNull(media?.meanScore),
-      userScore: numberOrNull(entry?.score),
+      // getRawAnimeCollection requests POINT_100 scores. Wrapped presents user
+      // ratings on a 0-10 scale, while AniList meanScore remains POINT_100.
+      userScore: userScoreFromPoint100(entry?.score),
       status: String(entry?.status || "UNKNOWN"),
       progress: Math.max(0, Number(entry?.progress || 0)),
       episodes: numberOrNull(media?.episodes),
@@ -274,7 +281,9 @@ export function createDomain() {
       ranked[0] ? `#1 anime: ${ranked[0].title}` : "No top anime available"
     ];
     if (day) summary.push(`${day.label} had the most latest-watch records`);
-    const heroArt = ranked.map((media) => media.banner || media.cover).concat(watched.map((media) => media.banner || media.cover)).filter(Boolean);
+    const heroArt = Array.from(new Set([
+      ranked[0], watched[0], ranked[1], highestRated, studio?.anime[0], completed[0], recs[0]
+    ].filter((media): media is MediaRecord => Boolean(media)).map((media) => media.banner || media.cover).filter(Boolean))).slice(0, 8);
     return {
       version: 1,
       generatedAt: new Date(nowValue || Date.now()).toISOString(),
