@@ -6,8 +6,6 @@ export interface WrappedSettings {
   includeCompleted: boolean;
   includeRatings: boolean;
   recommendations: boolean;
-  soundtrack: "Inferno" | "Bling-Bang-Bang-Born" | "Otonoke" | "Black Catcher" | "Random" | "Off";
-  volume: number;
   autoAdvance: boolean;
 }
 
@@ -221,7 +219,6 @@ export function createDomain() {
     const byId: Record<number, MediaRecord> = {};
     for (const media of all) {
       const belongs = inWindow(media.historyAt, period)
-        || (media.progress > 0 && inWindow(media.updatedAt, period))
         || inWindow(media.startedAt, period)
         || inWindow(media.completedAt, period);
       if (belongs) byId[media.mediaId] = media;
@@ -246,7 +243,7 @@ export function createDomain() {
     return watched.slice().sort((a, b) => {
       const scoreDiff = engagement(b, period) - engagement(a, period);
       if (scoreDiff) return scoreDiff;
-      const dateDiff = (b.historyAt || b.updatedAt || 0) - (a.historyAt || a.updatedAt || 0);
+      const dateDiff = (b.historyAt || b.completedAt || b.startedAt || 0) - (a.historyAt || a.completedAt || a.startedAt || 0);
       return dateDiff || a.mediaId - b.mediaId;
     }).slice(0, 5).map((media, index) => ({
       ...media,
@@ -364,7 +361,7 @@ export function createDomain() {
       version: 1,
       generatedAt: new Date(nowValue || Date.now()).toISOString(),
       period,
-      accuracyNote: "Period membership uses dated Seanime watch history plus AniList update, start, and completion dates. Current progress is not presented as period-specific episode history.",
+      accuracyNote: "Bounded-period membership uses dated Seanime watch history plus AniList start and completion dates. AniList list-update timestamps are never treated as watch evidence.",
       watched,
       completed,
       topFive: ranked,

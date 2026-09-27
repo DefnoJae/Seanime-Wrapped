@@ -1,14 +1,14 @@
 // Optional browser regression: node scripts/verify-viewer.mjs [Playwright package path]
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { createDomain } from "../src/domain.ts";
 import { createViewer } from "../src/viewer.ts";
 const { chromium } = createRequire(import.meta.url)(process.argv[2] || "playwright");
 const browser = await chromium.launch({ channel: "msedge", headless: true });
 const now = new Date(2026, 8, 27, 12).getTime();
 const art = "data:image/svg+xml," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="600" height="900"><rect width="600" height="900" fill="#624181"/><circle cx="380" cy="240" r="200" fill="#df82bf"/></svg>');
-const settings = { period: "month", includeWatched: true, includeCompleted: true, includeRatings: true, recommendations: true, soundtrack: "Off", volume: 30, autoAdvance: false };
+const settings = { period: "month", includeWatched: true, includeCompleted: true, includeRatings: true, recommendations: true, autoAdvance: false };
 const entries = Array.from({ length: 15 }, (_, i) => ({
   score: i < 5 ? String(95 - i * 5) : 0, status: i < 5 ? "COMPLETED" : "PLANNING", progress: i < 5 ? 24 : 0,
   completedAt: i < 5 ? { year: 2026, month: 9, day: 10 } : null,
@@ -16,17 +16,21 @@ const entries = Array.from({ length: 15 }, (_, i) => ({
 }));
 const domain = createDomain();
 const session = domain.buildSession(domain.normalizeCollection({ MediaListCollection: { lists: [{ entries }] } }, {}), {}, [], settings, now);
-const html = createViewer().documentFor({ session, settings, audioSource: "", audioLabel: "" });
+const html = createViewer().documentFor({ session, settings });
+const icon = await readFile(new URL("../assets/icon.png", import.meta.url));
 const errors = [];
 try {
   for (const [width, height] of [[1440, 900], [1920, 1080]]) {
     const page = await browser.newPage({ viewport: { width, height }, reducedMotion: "reduce" });
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.route("http**/*", (route) => route.abort());
+    await page.route("http**/*", (route) => route.request().url().endsWith("/assets/icon.png")
+      ? route.fulfill({ status: 200, contentType: "image/png", body: icon })
+      : route.abort());
     await page.setContent(html);
     await page.locator(".loading.hidden").waitFor();
     assert.equal(await page.locator("#app").evaluate((el) => el === document.activeElement), true);
-    assert.equal(await page.locator("#mute").isVisible(), false);
+    assert.ok(await page.locator(".brand-icon").first().evaluate((el) => el.naturalWidth > 0));
+    assert.equal(await page.locator("#mute").count(), 0);
     const seen = [];
     const ranks = [];
     for (let i = 0; i < 20; i++) {

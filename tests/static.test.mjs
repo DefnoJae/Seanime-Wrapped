@@ -1,12 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { createViewer } from "../src/viewer.ts";
 
 const indexSource = await readFile(new URL("../src/index.ts", import.meta.url), "utf8");
 const viewerSource = await readFile(new URL("../src/viewer.ts", import.meta.url), "utf8");
 const domainSource = await readFile(new URL("../src/domain.ts", import.meta.url), "utf8");
 const bundle = await readFile(new URL("../dist/code.js", import.meta.url), "utf8");
+const manifest = JSON.parse(await readFile(new URL("../manifest.json", import.meta.url), "utf8"));
 
 test("tray open is free of AniList collection calls", () => {
   const handler = indexSource.match(/tray\.onOpen\(\(\) => \{([\s\S]*?)\}\);/)?.[1] || "";
@@ -48,10 +49,29 @@ test("tray requests Seanime's drawer presentation", () => {
   assert.match(indexSource, /newTray\(\{[^}]*isDrawer:\s*true/);
 });
 
-test("public builds show a truthful no-soundtrack state", () => {
-  assert.match(indexSource, /No local soundtracks installed/);
-  assert.match(indexSource, /soundtrack\.source \? settings : \{ \.\.\.settings, soundtrack: "Off" as const \}/);
-  assert.match(indexSource, /Object\.keys\(audioRegistry\)\.filter/);
+test("official PNG icon uses a public raw-GitHub path in the manifest, tray, and viewer", async () => {
+  const expected = "https://raw.githubusercontent.com/DefnoJae/Seanime-Wrapped/main/assets/icon.png";
+  assert.equal(manifest.icon, expected);
+  assert.match(viewerSource, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match(indexSource, /iconUrl: icon/);
+  assert.ok((await stat(new URL("../assets/icon.png", import.meta.url))).size > 0);
+  assert.doesNotMatch(indexSource + viewerSource, /data:image\/png;base64/i);
+});
+
+test("generation drawer shows staged progress and disables duplicate starts", () => {
+  for (const stage of ["Reading your anime library", "Calculating your stats", "Building your Top 5", "Finding what you might watch next", "Preparing your Wrapped"]) {
+    assert.match(indexSource, new RegExp(stage));
+  }
+  assert.match(indexSource, /if \(loading\.get\(\)\) return/);
+  assert.match(indexSource, /disabled: loading\.get\(\)/);
+  assert.match(indexSource, /sw-loading-fill/);
+});
+
+test("plugin-owned source and build paths contain no audio feature code", async () => {
+  const buildSource = await readFile(new URL("../scripts/build.mjs", import.meta.url), "utf8");
+  const packageSource = await readFile(new URL("../package.json", import.meta.url), "utf8");
+  const owned = indexSource + viewerSource + domainSource + buildSource + packageSource;
+  assert.doesNotMatch(owned, /audioSource|audioLabel|soundtrack|toggleMute|setupAudio|new Audio|audioRegistry|volumeRef/i);
 });
 
 test("every Seanime UI render callback returns its root component", () => {
@@ -69,11 +89,9 @@ test("Top 5 reveal order is reversed to #5 through #1", () => {
   assert.match(viewerSource, /m\.rank===1\?'winner'/);
 });
 
-test("close path cancels frames, removes listeners, and destroys audio", () => {
+test("close path cancels frames and removes listeners", () => {
   assert.match(viewerSource, /cancelAnimationFrame\(raf\)/);
   assert.match(viewerSource, /removeEventListener\('keydown'/);
-  assert.match(viewerSource, /audio\.pause\(\)/);
-  assert.match(viewerSource, /audio\.removeAttribute\('src'\)/);
   assert.match(viewerSource, /window\.webview\?\.send\('close'/);
 });
 
@@ -93,8 +111,7 @@ test("generated viewer document contains syntactically valid runtime JavaScript"
   };
   const html = createViewer().documentFor({
     session: emptySession,
-    settings: { period: "all-time", includeWatched: true, includeCompleted: true, includeRatings: true, recommendations: true, soundtrack: "Off", volume: 30, autoAdvance: false },
-    audioSource: "", audioLabel: ""
+    settings: { period: "all-time", includeWatched: true, includeCompleted: true, includeRatings: true, recommendations: true, autoAdvance: false }
   });
   const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
   assert.ok(scripts.length);
@@ -109,7 +126,7 @@ test("both winner views have explicit gold styling and large headings have safe 
   assert.doesNotMatch(viewerSource, /line-height:\.(?:7\d*|8\d*)(?:;|\})/);
 });
 
-test("silent viewer hides soundtrack control and uses only SVG control icons", () => {
+test("silent viewer has no sound controls and uses only SVG control icons", () => {
   const emptySession = {
     version: 1, generatedAt: new Date(0).toISOString(),
     period: { key: "month", label: "September 2026", context: "this month", start: 0, end: 1 },
@@ -119,10 +136,9 @@ test("silent viewer hides soundtrack control and uses only SVG control icons", (
   };
   const html = createViewer().documentFor({
     session: emptySession,
-    settings: { period: "month", includeWatched: true, includeCompleted: true, includeRatings: true, recommendations: true, soundtrack: "Off", volume: 30, autoAdvance: false },
-    audioSource: "", audioLabel: ""
+    settings: { period: "month", includeWatched: true, includeCompleted: true, includeRatings: true, recommendations: true, autoAdvance: false }
   });
-  assert.match(html, /<button id="mute"[^>]* hidden>/);
+  assert.doesNotMatch(html, /id="mute"|soundPrompt|soundtrack/i);
   assert.equal((html.match(/id="close"/g) || []).length, 1);
   assert.doesNotMatch(html, />[×♪♩Ⅱ▶]</);
 });

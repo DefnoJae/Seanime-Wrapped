@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 await mkdir(join(root, "dist"), { recursive: true });
-const files = ["src/domain.ts", "src/viewer.ts", "src/generated/audio.generated.ts", "src/index.ts"];
+const files = ["src/domain.ts", "src/viewer.ts", "src/index.ts"];
 const parts = [];
 for (const relative of files) {
   const source = await readFile(join(root, relative), "utf8");

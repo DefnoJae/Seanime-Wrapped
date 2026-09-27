@@ -515,7 +515,7 @@ declare namespace $ui {
         onClose(cb: () => void): void
 
         /** Registers the render function for the tray content */
-        render(fn: () => void): void
+        render(fn: () => any): void
 
         /** Registers the render function for the tray content */
         htm(fn: () => string): void

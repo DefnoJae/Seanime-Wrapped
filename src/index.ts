@@ -1,22 +1,18 @@
 import { createDomain, type MediaRecord, type StudioMetadata, type WrappedDomain, type WrappedSession, type WrappedSettings } from "./domain";
-import { createViewer, type WrappedViewer } from "./viewer";
-import { createAudioRegistry } from "./generated/audio.generated";
+import { createViewer, WRAPPED_ICON_URL, type WrappedViewer } from "./viewer";
 
 declare const console: { error(...args: unknown[]): void; warn(...args: unknown[]): void };
 
 const SHARED_DOMAIN = "seanime-wrapped/domain/v1";
 const SHARED_VIEWER = "seanime-wrapped/viewer/v1";
-const SHARED_AUDIO = "seanime-wrapped/audio/v1";
 
 function init() {
   $shared.define(SHARED_DOMAIN, createDomain);
   $shared.define(SHARED_VIEWER, createViewer);
-  $shared.define(SHARED_AUDIO, createAudioRegistry);
 
   $ui.register((ctx) => {
     const domain = $shared.use<WrappedDomain>("seanime-wrapped/domain/v1");
     const viewerBuilder = $shared.use<WrappedViewer>("seanime-wrapped/viewer/v1");
-    const audioRegistry = $shared.use<Record<string, string>>("seanime-wrapped/audio/v1");
     const SETTINGS_KEY = "settings-v1";
     const DETAIL_CACHE_KEY = "metadata-cache-v1";
     const RATING_CACHE_KEY = "community-ratings-v1";
@@ -24,7 +20,7 @@ function init() {
     const DEBUG_SCORES = false;
     const LAST_SESSION_KEY = "last-session-v1";
     const LAST_GENERATED_KEY = "last-generated-v1";
-    const icon = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='1' x2='1' y2='0'%3E%3Cstop stop-color='%235b6cff'/%3E%3Cstop offset='.55' stop-color='%23d946ef'/%3E%3Cstop offset='1' stop-color='%23ff7b8b'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='128' height='128' rx='30' fill='%230b1020'/%3E%3Cpath d='M24 91V68a8 8 0 0 1 16 0v23zm22 0V45a8 8 0 0 1 16 0v46zm22 0V28a8 8 0 0 1 16 0v63zm22 0V54a8 8 0 0 1 16 0v37z' fill='url(%23g)'/%3E%3C/svg%3E";
+    const icon = WRAPPED_ICON_URL;
 
     const defaults: WrappedSettings = {
       period: "month",
@@ -32,15 +28,13 @@ function init() {
       includeCompleted: true,
       includeRatings: true,
       recommendations: true,
-      soundtrack: "Random",
-      volume: 30,
       autoAdvance: true
     };
 
     function loadSettings(): WrappedSettings {
       try {
         const stored = $storage.get<Partial<WrappedSettings>>(SETTINGS_KEY) || {};
-        return { ...defaults, ...stored, volume: Math.max(0, Math.min(100, Number(stored.volume ?? defaults.volume))) };
+        return { ...defaults, ...stored };
       } catch {
         return { ...defaults };
       }
@@ -51,6 +45,8 @@ function init() {
     let viewerHtml = "";
     let viewerOpen = false;
     const loading = ctx.state(false);
+    const loadingStage = ctx.state("");
+    const loadingProgress = ctx.state(0);
     const error = ctx.state("");
     const refreshQueued = ctx.state(false);
     const lastGenerated = ctx.state($storage.get<string>(LAST_GENERATED_KEY) || "");
@@ -60,8 +56,6 @@ function init() {
     const completedRef = ctx.fieldRef(settings.includeCompleted);
     const ratingsRef = ctx.fieldRef(settings.includeRatings);
     const recommendationsRef = ctx.fieldRef(settings.recommendations);
-    const soundtrackRef = ctx.fieldRef(settings.soundtrack);
-    const volumeRef = ctx.fieldRef(String(settings.volume));
     const autoAdvanceRef = ctx.fieldRef(settings.autoAdvance);
 
     function formatGeneratedAt(value: string): string {
@@ -78,8 +72,6 @@ function init() {
         includeCompleted: Boolean(completedRef.current),
         includeRatings: Boolean(ratingsRef.current),
         recommendations: Boolean(recommendationsRef.current),
-        soundtrack: soundtrackRef.current as WrappedSettings["soundtrack"],
-        volume: Math.max(0, Math.min(100, Number(volumeRef.current) || 0)),
         autoAdvance: Boolean(autoAdvanceRef.current)
       };
       $storage.set(SETTINGS_KEY, settings);
@@ -90,8 +82,6 @@ function init() {
     completedRef.onValueChange(saveSettings);
     ratingsRef.onValueChange(saveSettings);
     recommendationsRef.onValueChange(saveSettings);
-    soundtrackRef.onValueChange(saveSettings);
-    volumeRef.onValueChange(saveSettings);
     autoAdvanceRef.onValueChange(saveSettings);
 
     const viewer = ctx.newWebview({
@@ -203,18 +193,26 @@ function init() {
       }
     }
 
-    function chooseSoundtrack(): { source: string; label: string } {
-      if (settings.soundtrack === "Off") return { source: "", label: "" };
-      const available = Object.keys(audioRegistry).filter((label) => Boolean(audioRegistry[label]));
-      if (!available.length) return { source: "", label: "" };
-      let label: string = settings.soundtrack;
-      if (label === "Random") label = available[Math.floor(Math.random() * available.length)];
-      if (!audioRegistry[label]) {
-        const fallback = available[0];
-        ctx.toast.warning(`${label} is not installed locally; using ${fallback} instead.`);
-        label = fallback;
-      }
-      return { source: audioRegistry[label] || "", label };
+    function updateLoading(stage: string, progress: number) {
+      loadingStage.set(stage);
+      loadingProgress.set(progress);
+      tray.update();
+    }
+
+    function failGeneration(cause: unknown) {
+      const message = cause instanceof Error ? cause.message : String(cause || "Unknown error");
+      error.set(message.includes("rate") ? "AniList is rate-limited right now. Cached data was insufficient; please try again later." : message);
+      loading.set(false);
+      loadingStage.set("");
+      loadingProgress.set(0);
+      tray.update();
+      ctx.toast.error(error.get());
+    }
+
+    function later(fn: () => void, delay = 45) {
+      ctx.setTimeout(() => {
+        try { fn(); } catch (cause) { failGeneration(cause); }
+      }, delay);
     }
 
     function startWrapped() {
@@ -222,42 +220,56 @@ function init() {
       saveSettings();
       loading.set(true);
       error.set("");
-      tray.update();
-      try {
+      updateLoading("Reading your anime library…", 8);
+
+      later(() => {
         const collection = $anilist.getRawAnimeCollection(forceRefresh);
         if (DEBUG_SCORES) console.warn("Wrapped score diagnostics", JSON.stringify(domain.scoreDiagnostics(collection)));
         const history = ctx.continuity.getWatchHistory();
         const all = domain.normalizeCollection(collection, history);
         if (!all.length) throw new Error("No anime collection data is available. Connect AniList or add anime to your local account first.");
-        const preliminary = domain.buildSession(all, {}, [], settings);
-        const metadata = collectMetadata(preliminary);
-        collectRelationMetadata(metadata, preliminary);
-        const session = domain.buildSession(all, metadata, [], settings);
-        enrichRecommendationRatings(session);
-        if (!session.watched.length && settings.includeWatched) {
-          ctx.toast.warning("No defensible watch activity was found for this period. Wrapped will show the sections that are available.");
-        }
-        const soundtrack = chooseSoundtrack();
-        if (settings.soundtrack !== "Off" && !soundtrack.source) ctx.toast.info("No local soundtrack files were found, so this Wrapped will play silently.");
-        const viewerSettings = soundtrack.source ? settings : { ...settings, soundtrack: "Off" as const };
-        viewerHtml = viewerBuilder.documentFor({ session, settings: viewerSettings, audioSource: soundtrack.source, audioLabel: soundtrack.label });
-        $storage.set(LAST_SESSION_KEY, session);
-        $storage.set(LAST_GENERATED_KEY, session.generatedAt);
-        lastGenerated.set(session.generatedAt);
-        forceRefresh = false;
-        refreshQueued.set(false);
-        viewer.update();
-        viewer.show();
-        viewerOpen = true;
-        tray.close();
-      } catch (cause) {
-        const message = cause instanceof Error ? cause.message : String(cause || "Unknown error");
-        error.set(message.includes("rate") ? "AniList is rate-limited right now. Cached data was insufficient; please try again later." : message);
-        ctx.toast.error(error.get());
-      } finally {
-        loading.set(false);
-        tray.update();
-      }
+        updateLoading("Calculating your stats…", 30);
+
+        later(() => {
+          const preliminary = domain.buildSession(all, {}, [], settings);
+          updateLoading("Building your Top 5…", 52);
+
+          later(() => {
+            const metadata = collectMetadata(preliminary);
+            updateLoading("Finding what you might watch next…", 74);
+
+            later(() => {
+              collectRelationMetadata(metadata, preliminary);
+              const session = domain.buildSession(all, metadata, [], settings);
+              enrichRecommendationRatings(session);
+              if (!session.watched.length && settings.includeWatched) {
+                ctx.toast.warning("No defensible watch activity was found for this period. Wrapped will show the sections that are available.");
+              }
+              updateLoading("Preparing your Wrapped…", 92);
+
+              later(() => {
+                viewerHtml = viewerBuilder.documentFor({ session, settings });
+                $storage.set(LAST_SESSION_KEY, session);
+                $storage.set(LAST_GENERATED_KEY, session.generatedAt);
+                lastGenerated.set(session.generatedAt);
+                forceRefresh = false;
+                refreshQueued.set(false);
+                updateLoading("Your Wrapped is ready.", 100);
+                viewer.update();
+
+                later(() => {
+                  viewer.show();
+                  viewerOpen = true;
+                  loading.set(false);
+                  loadingStage.set("");
+                  tray.close();
+                  tray.update();
+                }, 180);
+              });
+            });
+          });
+        });
+      });
     }
 
     const startHandler = ctx.eventHandler("seanime-wrapped-start", startWrapped);
@@ -274,35 +286,21 @@ function init() {
       tray.update();
     });
 
-    const volumeHandlers: Record<number, string> = {};
-    for (const value of [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]) {
-      volumeHandlers[value] = ctx.eventHandler(`seanime-wrapped-volume-${value}`, () => {
-        volumeRef.setValue(String(value));
-        saveSettings();
-        tray.update();
-      });
-    }
-
     const tray = ctx.newTray({ iconUrl: icon, withContent: true, isDrawer: true, width: "390px", minHeight: "620px" });
     tray.render(() => {
-      const currentVolume = Math.max(0, Math.min(100, Number(volumeRef.current) || 0));
-      const availableTracks = Object.keys(audioRegistry).filter((label) => Boolean(audioRegistry[label]));
-      const soundtrackControls = availableTracks.length ? tray.stack([
-        tray.select("Track", { fieldRef: soundtrackRef, options: ["Random", "Inferno", "Bling-Bang-Bang-Born", "Otonoke", "Black Catcher", "Off"].map((value) => ({ label: value, value })) }),
-        tray.text(`Local tracks available: ${availableTracks.length}/4`, { className: "sw-note" }),
-        tray.text(`Volume · ${currentVolume}%`, { className: "sw-label" }),
-        tray.flex([0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map((value) => tray.div([
-          tray.button(String(value), { onClick: volumeHandlers[value], size: "xs" })
-        ], { className: value <= currentVolume ? "is-on" : "" })), { className: "sw-volume", gap: 1 })
-      ], { gap: 2 }) : tray.text("No local soundtracks installed", { className: "sw-note" });
       return tray.stack([
         tray.css(`
           .sw-shell{padding:4px}.sw-header{padding:8px 4px 16px;border-bottom:1px solid rgba(255,255,255,.09)}
+          .sw-header img{border-radius:11px;object-fit:cover;box-shadow:0 0 20px rgba(111,88,255,.28)}
           .sw-title{font-size:1.25rem!important;font-weight:800;letter-spacing:-.025em}.sw-subtitle{font-size:.79rem!important;color:rgba(255,255,255,.58)}
           .sw-section{padding:14px 4px 2px}.sw-label{font-size:.7rem!important;text-transform:uppercase;letter-spacing:.13em;color:rgba(255,255,255,.48);font-weight:750}
-          .sw-volume{display:flex;gap:3px!important;align-items:center}.sw-volume button{min-width:0!important;width:25px!important;height:9px!important;padding:0!important;border-radius:99px!important;font-size:0!important;background:rgba(255,255,255,.13)!important}.sw-volume .is-on button{background:linear-gradient(90deg,#6175ff,#ed4fd8)!important;box-shadow:0 0 9px rgba(222,69,211,.3)}
           .sw-primary button{width:100%;background:linear-gradient(100deg,#536cff,#a855f7 54%,#f24f9d)!important;border:0!important;font-weight:800!important;box-shadow:0 10px 28px rgba(132,83,255,.28)}
           .sw-actions button{flex:1}.sw-note{font-size:.72rem!important;color:rgba(255,255,255,.48);line-height:1.4}.sw-error{color:#ff9ba8!important;font-size:.78rem!important}
+          .sw-loading{padding:14px;border:1px solid rgba(139,92,246,.32);border-radius:13px;background:rgba(88,64,160,.12)}
+          .sw-loading-text{font-size:.8rem!important;font-weight:700;color:rgba(255,255,255,.88)}
+          .sw-loading-track{height:8px;border-radius:99px;overflow:hidden;background:rgba(255,255,255,.1)}
+          .sw-loading-fill{height:100%;border-radius:inherit;background:linear-gradient(90deg,#536cff,#b855f7 58%,#f24f9d);box-shadow:0 0 14px rgba(226,79,207,.42);transition:width .55s cubic-bezier(.22,.8,.2,1);position:relative}
+          .sw-loading-fill:after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.55),transparent);animation:sw-shimmer 1.15s linear infinite}@keyframes sw-shimmer{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
         `),
         tray.div([
           tray.flex([
@@ -333,22 +331,24 @@ function init() {
           tray.switch("Recommendations", { fieldRef: recommendationsRef })
         ], { className: "sw-section" }),
         tray.div([
-          tray.text("Soundtrack", { className: "sw-label" }),
-          soundtrackControls
-        ], { className: "sw-section" }),
-        tray.div([
           tray.text("Playback", { className: "sw-label" }),
           tray.switch("Auto-advance slides", { fieldRef: autoAdvanceRef })
         ], { className: "sw-section" }),
         error.get() ? tray.text(error.get(), { className: "sw-error" }) : tray.div([]),
         refreshQueued.get() ? tray.alert({ title: "Refresh queued", description: "Fresh data will be requested only after Start Wrapped is pressed.", intent: "info" }) : tray.div([]),
+        loading.get() ? tray.stack([
+          tray.text(loadingStage.get(), { className: "sw-loading-text" }),
+          tray.div([
+            tray.div([], { className: "sw-loading-fill", style: { width: `${loadingProgress.get()}%` } })
+          ], { className: "sw-loading-track" }),
+          tray.text(`${loadingProgress.get()}% · Building locally in Seanime`, { className: "sw-note" })
+        ], { className: "sw-loading", gap: 2 }) : tray.div([]),
         tray.div([
           tray.button(loading.get() ? "Preparing Wrapped…" : "Start Wrapped", { onClick: startHandler, loading: loading.get(), disabled: loading.get(), size: "lg" })
         ], { className: "sw-primary" }),
-        tray.flex([
-          tray.button("Refresh Data", { onClick: refreshHandler, intent: "gray-subtle" }),
-          tray.badge(`${availableTracks.length} soundtrack${availableTracks.length === 1 ? "" : "s"}`, { intent: availableTracks.length ? "success" : "gray", size: "sm" })
-        ], { className: "sw-actions", gap: 2 }),
+        tray.div([
+          tray.button("Refresh Data", { onClick: refreshHandler, intent: "gray-subtle", disabled: loading.get() })
+        ], { className: "sw-actions" }),
         tray.text(lastGenerated.get() ? `Last generated ${formatGeneratedAt(lastGenerated.get())}` : "No Wrapped generated yet", { className: "sw-note" }),
         tray.text("Opening this tray never loads AniList data. Start Wrapped prepares one offline presentation session.", { className: "sw-note" })
       ], { className: "sw-shell", gap: 2 });

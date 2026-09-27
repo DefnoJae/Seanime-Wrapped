@@ -35,8 +35,6 @@ const settings = {
   includeCompleted: true,
   includeRatings: true,
   recommendations: true,
-  soundtrack: "Off",
-  volume: 30,
   autoAdvance: true
 };
 
@@ -95,17 +93,32 @@ test("recommendations use only current Top 5 seeds and merge community scores ac
   assert.ok(!session.recommendations.some((item) => session.topFive.some((top) => top.mediaId === item.mediaId)));
 });
 
-test("period filtering uses dated watch history and never treats current progress as period history", () => {
+test("bounded periods require watch, start, or completion evidence and ignore updatedAt alone", () => {
   const september = new Date(2026, 8, 15, 18).getTime();
   const august = new Date(2026, 7, 20, 18).getTime();
   const all = [
     media(1, { status: "CURRENT", progress: 8, historyAt: september, historyEpisode: 8 }),
     media(2, { status: "CURRENT", progress: 10, historyAt: august, historyEpisode: 10 }),
-    media(3, { status: "CURRENT", progress: 4, updatedAt: september })
+    media(3, { status: "CURRENT", progress: 4, updatedAt: september }),
+    media(4, { status: "CURRENT", progress: 2, startedAt: september }),
+    media(5, { status: "COMPLETED", progress: 12, completedAt: september })
   ];
   const session = domain.buildSession(all, {}, [], settings, now);
-  assert.deepEqual(session.watched.map((item) => item.mediaId), [1, 3]);
-  assert.match(session.accuracyNote, /Current progress is not presented as period-specific/);
+  assert.deepEqual(session.watched.map((item) => item.mediaId), [1, 4, 5]);
+  assert.deepEqual(session.completed.map((item) => item.mediaId), [5]);
+  assert.match(session.accuracyNote, /list-update timestamps are never treated as watch evidence/);
+});
+
+test("bulk-imported old anime cannot enter a recent Top 5", () => {
+  const september = new Date(2026, 8, 15, 18).getTime();
+  const recent = media(1, { status: "CURRENT", progress: 4, historyAt: september, userScore: 7 });
+  const imported = Array.from({ length: 20 }, (_, index) => media(index + 10, {
+    status: "COMPLETED", progress: 500, episodes: 500, userScore: 10, updatedAt: september,
+    startedAt: new Date(2010, 0, 1).getTime(), completedAt: new Date(2010, 6, 1).getTime()
+  }));
+  const session = domain.buildSession([recent, ...imported], {}, [], settings, now);
+  assert.deepEqual(session.watched.map((item) => item.mediaId), [1]);
+  assert.deepEqual(session.topFive.map((item) => item.mediaId), [1]);
 });
 
 test("period labels and weekday names are deterministic and contain no locale timestamps", () => {
@@ -189,7 +202,7 @@ test("POINT_100 collection scores normalize to 0-10 while global meanScore stays
   const session = domain.buildSession(normalized, {}, [], settings, now);
   assert.equal(session.highestRated?.userScore, 9);
   assert.equal(session.averageScore, 8);
-  const html = createViewer().documentFor({ session, settings, audioSource: "", audioLabel: "" });
+  const html = createViewer().documentFor({ session, settings });
   assert.match(html, /"userScore":9/);
   assert.match(html, /"averageScore":8/);
   assert.match(html, /"scoreLabels":\{"highestRated":"9\.0","average":"8\.0"\}/);
