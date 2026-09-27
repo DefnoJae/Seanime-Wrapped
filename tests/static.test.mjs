@@ -31,6 +31,16 @@ test("tray requests Seanime's drawer presentation", () => {
   assert.match(indexSource, /newTray\(\{[^}]*isDrawer:\s*true/);
 });
 
+test("every Seanime UI render callback returns its root component", () => {
+  const renderCallbacks = [...indexSource.matchAll(/([A-Za-z_$][\w$]*)\.render\(\(\) => \{/g)];
+  assert.equal(renderCallbacks.length, 1);
+  for (const callback of renderCallbacks) {
+    const owner = callback[1];
+    const body = indexSource.slice(callback.index, indexSource.indexOf(`${owner}.onOpen`, callback.index));
+    assert.match(body, new RegExp(`return\\s+${owner}\\.[A-Za-z_$][\\w$]*\\(`));
+  }
+});
+
 test("Top 5 reveal order is reversed to #5 through #1", () => {
   assert.match(viewerSource, /S\.topFive\.slice\(\)\.reverse\(\)\.forEach/);
   assert.match(viewerSource, /m\.rank===1\?'winner'/);

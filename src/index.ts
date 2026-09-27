@@ -243,7 +243,7 @@ function init() {
     tray.render(() => {
       const currentVolume = Math.max(0, Math.min(100, Number(volumeRef.current) || 0));
       const availableTracks = Object.keys(audioRegistry);
-      tray.stack([
+      return tray.stack([
         tray.css(`
           .sw-shell{padding:4px}.sw-header{padding:8px 4px 16px;border-bottom:1px solid rgba(255,255,255,.09)}
           .sw-title{font-size:1.25rem!important;font-weight:800;letter-spacing:-.025em}.sw-subtitle{font-size:.79rem!important;color:rgba(255,255,255,.58)}
