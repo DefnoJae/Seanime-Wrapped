@@ -27,6 +27,7 @@ if (errors.length) {
   for (const error of errors) console.error(ts.flattenDiagnosticMessageText(error.messageText, "\n"));
   process.exitCode = 1;
 } else {
-  await writeFile(join(root, "dist", "code.js"), `// Seanime Wrapped v1.0.0 — generated bundle\n${result.outputText}`, "utf8");
+  const { version } = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
+  await writeFile(join(root, "dist", "code.js"), `// Seanime Wrapped v${version} — generated bundle\n${result.outputText}`, "utf8");
 }
 console.log("Built dist/code.js");

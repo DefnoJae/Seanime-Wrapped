@@ -19,6 +19,9 @@ function init() {
     const audioRegistry = $shared.use<Record<string, string>>("seanime-wrapped/audio/v1");
     const SETTINGS_KEY = "settings-v1";
     const DETAIL_CACHE_KEY = "metadata-cache-v1";
+    const RATING_CACHE_KEY = "community-ratings-v1";
+    // Set true for one local validation build. Reports counts/shapes only.
+    const DEBUG_SCORES = false;
     const LAST_SESSION_KEY = "last-session-v1";
     const LAST_GENERATED_KEY = "last-generated-v1";
     const icon = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='1' x2='1' y2='0'%3E%3Cstop stop-color='%235b6cff'/%3E%3Cstop offset='.55' stop-color='%23d946ef'/%3E%3Cstop offset='1' stop-color='%23ff7b8b'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='128' height='128' rx='30' fill='%230b1020'/%3E%3Cpath d='M24 91V68a8 8 0 0 1 16 0v23zm22 0V45a8 8 0 0 1 16 0v46zm22 0V28a8 8 0 0 1 16 0v63zm22 0V54a8 8 0 0 1 16 0v37z' fill='url(%23g)'/%3E%3C/svg%3E";
@@ -170,6 +173,36 @@ function init() {
       }
     }
 
+    function enrichRecommendationRatings(session: WrappedSession) {
+      const cache = forceRefresh ? {} : ($storage.get<Record<string, { score: number | null; at: number }>>(RATING_CACHE_KEY) || {});
+      const now = Date.now();
+      const missing = session.recommendations.filter((media) => {
+        if (media.globalScore !== null && media.globalScore > 0) return false;
+        const hit = cache[String(media.mediaId)];
+        if (hit && now - hit.at < 7 * 86400000) { media.globalScore = hit.score; return false; }
+        return true;
+      });
+      if (!missing.length) return;
+      try {
+        // Native customQuery returns the unwrapped GraphQL data object. Public
+        // community scores need no token; one request covers at most ten IDs.
+        const result = $anilist.customQuery<{ Page?: { media?: { id: number; meanScore?: number | null }[] } }>({
+          query: "query WrappedRatings($ids: [Int]) { Page(page: 1, perPage: 10) { media(id_in: $ids, type: ANIME) { id meanScore } } }",
+          variables: { ids: missing.map((media) => media.mediaId) }
+        }, "");
+        for (const item of result?.Page?.media || []) {
+          const score = domain.mediaFromBase(item).globalScore;
+          cache[String(item.id)] = { score: score && score > 0 ? score : null, at: now };
+          const candidate = missing.find((media) => media.mediaId === Number(item.id));
+          if (candidate) candidate.globalScore = cache[String(item.id)].score;
+        }
+        $storage.set(RATING_CACHE_KEY, cache);
+      } catch {
+        // Failed requests are not negative-cached, so the next session retries.
+        ctx.toast.warning("Some AniList community ratings are temporarily unavailable.");
+      }
+    }
+
     function chooseSoundtrack(): { source: string; label: string } {
       if (settings.soundtrack === "Off") return { source: "", label: "" };
       const available = Object.keys(audioRegistry).filter((label) => Boolean(audioRegistry[label]));
@@ -192,6 +225,7 @@ function init() {
       tray.update();
       try {
         const collection = $anilist.getRawAnimeCollection(forceRefresh);
+        if (DEBUG_SCORES) console.warn("Wrapped score diagnostics", JSON.stringify(domain.scoreDiagnostics(collection)));
         const history = ctx.continuity.getWatchHistory();
         const all = domain.normalizeCollection(collection, history);
         if (!all.length) throw new Error("No anime collection data is available. Connect AniList or add anime to your local account first.");
@@ -199,6 +233,7 @@ function init() {
         const metadata = collectMetadata(preliminary);
         collectRelationMetadata(metadata, preliminary);
         const session = domain.buildSession(all, metadata, [], settings);
+        enrichRecommendationRatings(session);
         if (!session.watched.length && settings.includeWatched) {
           ctx.toast.warning("No defensible watch activity was found for this period. Wrapped will show the sections that are available.");
         }
@@ -229,6 +264,7 @@ function init() {
     const refreshHandler = ctx.eventHandler("seanime-wrapped-refresh", () => {
       try {
         $storage.remove(DETAIL_CACHE_KEY);
+        $storage.remove(RATING_CACHE_KEY);
         $storage.remove(LAST_SESSION_KEY);
       } catch {}
       forceRefresh = true;

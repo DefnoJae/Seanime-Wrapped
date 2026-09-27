@@ -40,6 +40,61 @@ const settings = {
   autoAdvance: true
 };
 
+test("runtime score variants preserve personal ratings without using meanScore", () => {
+  for (const score of [90, "90", new Number(90), 9, "9"]) assert.equal(domain.extractUserScore({ score }), 9);
+  for (const score of [0, "0", null, undefined, "", "bad", true, Infinity, -1, 101]) assert.equal(domain.extractUserScore({ score }), null);
+  assert.equal(domain.extractUserScore({ getScore: () => 90 }), 9);
+  assert.equal(domain.extractUserScore({ meanScore: 90 }), null);
+  const host = domain.mediaFromBase({ id: 50, meanScore: new Number(84), genres: [new String("Action")], episodes: new Number(24) }, { score: new Number(90), updatedAt: new Number(now / 1000) });
+  assert.equal(host.globalScore, 84);
+  assert.equal(host.episodes, 24);
+  assert.equal(host.updatedAt, now);
+  assert.deepEqual(host.genres, ["Action"]);
+  const collection = { MediaListCollection: { lists: [{ entries: [90, "80", 7].map((score, i) => ({
+    score, status: "COMPLETED", progress: 12, completedAt: { year: 2026, month: 9, day: 10 },
+    media: { id: i + 1, meanScore: 40 }
+  })) }] } };
+  const session = domain.buildSession(domain.normalizeCollection(collection, {}), {}, [], settings, now);
+  assert.equal(session.averageScore, 8);
+  assert.equal(session.highestRated.userScore, 9);
+  const diagnostics = domain.scoreDiagnostics(collection);
+  assert.equal(diagnostics.entries, 3);
+  assert.equal(diagnostics.rated, 3);
+  assert.equal(diagnostics.shapes["score:string:11-100"], 1);
+});
+
+test("personal rating materially affects ranking and bounded progress cannot dominate", () => {
+  const all = [
+    media(1, { status: "COMPLETED", progress: 24, episodes: 24, userScore: 9.5 }),
+    media(2, { status: "CURRENT", progress: 250, episodes: 1000, userScore: 6 }),
+    media(3, { status: "CURRENT", progress: 10000, episodes: null, userScore: null })
+  ];
+  const config = { ...settings, period: "all-time" };
+  const session = domain.buildSession(all, {}, [], config, now);
+  assert.equal(session.topFive[0].mediaId, 1);
+  assert.match(session.topFive[0].metric, /Your score ★ 9\.5 · 24 episodes/);
+  assert.ok(session.topFive.every((item) => item.engagementScore <= 1));
+  const equal = [media(4, { progress: 12, userScore: 7 }), media(5, { progress: 12, userScore: 9 })];
+  assert.equal(domain.buildSession(equal, {}, [], config, now).topFive[0].mediaId, 5);
+});
+
+test("recommendations use only current Top 5 seeds and merge community scores across sources", () => {
+  const watched = Array.from({ length: 6 }, (_, i) => media(i + 1, { status: "COMPLETED", progress: 12, userScore: 10 - i }));
+  const fromFirst = media(20, { genres: [], globalScore: 84 });
+  const fromSixth = media(21, { genres: [], globalScore: 99 });
+  const details = {
+    1: { studioNames: ["A"], recommendations: [fromFirst], relations: [] },
+    6: { studioNames: ["B"], recommendations: [fromSixth], relations: [] }
+  };
+  const planning = [media(20, { genres: [], globalScore: null }), media(22, { genres: [], globalScore: 95 })];
+  const session = domain.buildSession([...watched, ...planning], details, [], { ...settings, period: "all-time" }, now);
+  assert.equal(session.recommendations[0].mediaId, 20);
+  assert.equal(session.recommendations[0].reason, "Recommended from your #1");
+  assert.equal(session.recommendations[0].globalScore, 84);
+  assert.ok(!session.recommendations.some((item) => item.mediaId === 21));
+  assert.ok(!session.recommendations.some((item) => session.topFive.some((top) => top.mediaId === item.mediaId)));
+});
+
 test("period filtering uses dated watch history and never treats current progress as period history", () => {
   const september = new Date(2026, 8, 15, 18).getTime();
   const august = new Date(2026, 7, 20, 18).getTime();

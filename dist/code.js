@@ -1,4 +1,4 @@
-// Seanime Wrapped v1.0.0 — generated bundle
+// Seanime Wrapped v1.0.3 — generated bundle
 function createDomain() {
     const fallbackArt = "https://raw.githubusercontent.com/DefnoJae/Seanime-Wrapped/main/assets/fallback.svg";
     const MONTHS = [
@@ -7,15 +7,51 @@ function createDomain() {
     ];
     const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
     function numberOrNull(value) {
+        // Goja can expose pointer-backed primitives as boxed host values.
+        if (value !== null && typeof value === "object" && typeof value.valueOf === "function") {
+            const primitive = value.valueOf();
+            if (typeof primitive === "number" || typeof primitive === "string")
+                value = primitive;
+        }
+        if (typeof value === "string") {
+            if (!/^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(value.trim()))
+                return null;
+            value = Number(value);
+        }
         return typeof value === "number" && Number.isFinite(value) ? value : null;
     }
-    function userScoreFromPoint100(value) {
-        const score = numberOrNull(value);
-        return score === null ? null : Math.max(0, Math.min(10, score / 10));
+    // The upstream JSON field is score; Goja also exposes GetScore as getScore.
+    function scoreValue(entry) {
+        return entry?.score ?? (typeof entry?.getScore === "function" ? entry.getScore() : null);
+    }
+    function extractUserScore(entry) {
+        const score = numberOrNull(scoreValue(entry));
+        if (score === null || score <= 0 || score > 100)
+            return null;
+        // Compatibility for normalized adapters. Values <=10 are ambiguous without
+        // format metadata; preserve them per the plugin's 0-10 adapter contract.
+        return score > 10 ? score / 10 : score;
+    }
+    function scoreDiagnostics(collection) {
+        let entries = 0, rated = 0;
+        const shapes = {};
+        for (const list of collection?.MediaListCollection?.lists || []) {
+            for (const entry of list?.entries || []) {
+                entries++;
+                const value = scoreValue(entry), numeric = numberOrNull(value);
+                if (extractUserScore(entry) !== null)
+                    rated++;
+                const field = entry?.score != null ? "score" : typeof entry?.getScore === "function" ? "getScore()" : "missing";
+                const shape = `${field}:${value === null ? "null" : typeof value}:${numeric === null ? "missing/invalid" : numeric <= 0 ? "zero/negative" : numeric <= 10 ? "1-10" : "11-100"}`;
+                shapes[shape] = (shapes[shape] || 0) + 1;
+            }
+        }
+        return { entries, rated, shapes };
     }
     function timestamp(value) {
-        if (typeof value === "number" && Number.isFinite(value))
-            return value > 1e12 ? value : value * 1000;
+        const numeric = numberOrNull(value);
+        if (numeric !== null)
+            return numeric > 1e12 ? numeric : numeric * 1000;
         if (typeof value !== "string" || !value)
             return null;
         const parsed = Date.parse(value);
@@ -36,11 +72,11 @@ function createDomain() {
             cover: media?.coverImage?.extraLarge || media?.coverImage?.large || media?.coverImage?.medium || fallbackArt,
             banner: media?.bannerImage || media?.coverImage?.extraLarge || media?.coverImage?.large || fallbackArt,
             color: media?.coverImage?.color || "#8b5cf6",
-            genres: Array.isArray(media?.genres) ? media.genres.filter((genre) => typeof genre === "string") : [],
+            genres: Array.isArray(media?.genres) ? media.genres.map((genre) => genre?.valueOf()).filter((genre) => typeof genre === "string") : [],
             globalScore: numberOrNull(media?.meanScore),
             // getRawAnimeCollection requests POINT_100 scores. Wrapped presents user
             // ratings on a 0-10 scale, while AniList meanScore remains POINT_100.
-            userScore: userScoreFromPoint100(entry?.score),
+            userScore: extractUserScore(entry),
             status: String(entry?.status || "UNKNOWN"),
             progress: Math.max(0, Number(entry?.progress || 0)),
             episodes: numberOrNull(media?.episodes),
@@ -63,8 +99,13 @@ function createDomain() {
                     continue;
                 const normalized = mediaFromBase(media, entry, watchHistory[id]);
                 const existing = byId[id];
-                if (!existing || normalized.updatedAt > (existing.updatedAt || 0))
+                if (!existing)
                     byId[id] = normalized;
+                else {
+                    const newer = (normalized.updatedAt || 0) > (existing.updatedAt || 0) ? normalized : existing;
+                    const older = newer === normalized ? existing : normalized;
+                    byId[id] = { ...newer, userScore: newer.userScore ?? older.userScore, globalScore: newer.globalScore ?? older.globalScore };
+                }
             }
         }
         return Object.keys(byId).map((id) => byId[Number(id)]).sort((a, b) => a.mediaId - b.mediaId);
@@ -116,9 +157,11 @@ function createDomain() {
         return all.filter((media) => media.status === "COMPLETED" && inWindow(media.completedAt, period));
     }
     function engagement(media, period) {
-        const historyInPeriod = inWindow(media.historyAt, period) ? 1 : 0;
         const progress = Math.max(media.progress, media.historyEpisode || 0);
-        return historyInPeriod * 1000000 + progress * 1000 + (media.status === "COMPLETED" ? 100 : 0) + (media.userScore || 0) * 3;
+        const absolute = Math.min(Math.log1p(progress) / Math.log1p(100), 1);
+        const completion = media.episodes && media.episodes > 0 ? Math.min(progress / media.episodes, 1) : absolute;
+        const normalized = .85 * completion + .15 * absolute;
+        return .6 * ((media.userScore || 0) / 10) + .4 * normalized;
     }
     function rankMedia(watched, period) {
         return watched.slice().sort((a, b) => {
@@ -131,7 +174,7 @@ function createDomain() {
             ...media,
             rank: index + 1,
             engagementScore: engagement(media, period),
-            metric: `${Math.max(media.progress, media.historyEpisode || 0)} episode${Math.max(media.progress, media.historyEpisode || 0) === 1 ? "" : "s"} progress`
+            metric: `${media.userScore ? `Your score ★ ${media.userScore.toFixed(1)} · ` : ""}${Math.max(media.progress, media.historyEpisode || 0)} episode${Math.max(media.progress, media.historyEpisode || 0) === 1 ? "" : "s"} progress`
         }));
     }
     function genreStats(watched) {
@@ -178,23 +221,47 @@ function createDomain() {
         }
         pool.push(...discovery);
         const unique = {};
-        for (const media of pool)
-            if (media.mediaId && !unique[media.mediaId])
-                unique[media.mediaId] = media;
+        for (const media of pool) {
+            if (!media.mediaId)
+                continue;
+            const prior = unique[media.mediaId];
+            unique[media.mediaId] = prior ? { ...prior, globalScore: prior.globalScore ?? media.globalScore, genres: Array.from(new Set([...prior.genres, ...media.genres])) } : media;
+        }
         return Object.keys(unique).map((id) => unique[Number(id)]);
     }
-    function recommend(all, watched, details, discovery, genres, studioName) {
+    function recommend(all, topFive, details, discovery) {
         const excluded = new Set(all.filter((media) => media.status === "COMPLETED" || media.status === "CURRENT" || media.status === "DROPPED").map((media) => media.mediaId));
         const planning = new Set(all.filter((media) => media.status === "PLANNING").map((media) => media.mediaId));
-        const topGenres = genres.slice(0, 3).map((genre) => genre.name);
-        return recommendationPool(all, watched, details, discovery).filter((media) => !excluded.has(media.mediaId)).map((media) => {
-            const overlaps = media.genres.filter((genre) => topGenres.includes(genre));
-            let score = (media.globalScore || 0) / 10 + overlaps.length * 18 + (planning.has(media.mediaId) ? 35 : 0);
-            let reason = planning.has(media.mediaId) ? "From your planning list" : overlaps.length ? `Matches ${overlaps[0]}` : "Highly rated for your tastes";
-            if (studioName && details[media.mediaId]?.studioNames?.includes(studioName)) {
-                score += 12;
-                reason = `From ${studioName}`;
+        topFive.forEach((media) => excluded.add(media.mediaId));
+        return recommendationPool(all, topFive, details, discovery).filter((media) => !excluded.has(media.mediaId)).map((media) => {
+            let score = (media.globalScore || 0) / 10 + (planning.has(media.mediaId) ? 12 : 0);
+            let directRank = 0, studioRank = 0, matches = 0;
+            for (const seed of topFive) {
+                const weight = seed.rank === 1 ? 1.6 : seed.rank === 2 ? 1.3 : 1;
+                const detail = details[seed.mediaId];
+                const direct = detail?.recommendations.some((item) => item.mediaId === media.mediaId);
+                const relation = detail?.relations.some((item) => item.mediaId === media.mediaId);
+                const overlap = media.genres.filter((genre) => seed.genres.includes(genre)).length;
+                const sameStudio = detail?.studioNames.some((name) => details[media.mediaId]?.studioNames.includes(name));
+                if (direct || relation || overlap || sameStudio)
+                    matches++;
+                if (direct || relation) {
+                    score += (direct ? 45 : 30) * weight;
+                    if (!directRank)
+                        directRank = seed.rank;
+                }
+                score += Math.min(overlap, 3) * 5 * weight;
+                if (sameStudio) {
+                    score += 12 * weight;
+                    if (!studioRank)
+                        studioRank = seed.rank;
+                }
             }
+            const reason = directRank ? `Recommended from your #${directRank}`
+                : studioRank ? `Same studio as your #${studioRank}`
+                    : matches > 1 ? `Matches ${matches} of your Top 5`
+                        : matches ? "Top-5 genre match"
+                            : planning.has(media.mediaId) ? "Already in your planning list" : "AniList community pick";
             return { ...media, reason, affinityScore: score };
         }).sort((a, b) => b.affinityScore - a.affinityScore || (b.globalScore || 0) - (a.globalScore || 0) || a.mediaId - b.mediaId).slice(0, 10);
     }
@@ -206,13 +273,13 @@ function createDomain() {
         const genres = genreStats(watched);
         const studio = topStudio(watched, details);
         const relevantById = {};
-        for (const media of [...watched, ...completed])
+        for (const media of [...selectedMedia(all, period), ...completedMedia(all, period)])
             relevantById[media.mediaId] = media;
         const relevant = Object.keys(relevantById).map((id) => relevantById[Number(id)]);
         const scored = settings.includeRatings ? relevant.filter((media) => media.userScore !== null && media.userScore > 0) : [];
         const averageScore = scored.length ? Math.round((scored.reduce((sum, media) => sum + media.userScore, 0) / scored.length) * 10) / 10 : null;
         const highestRated = scored.slice().sort((a, b) => b.userScore - a.userScore || engagement(b, period) - engagement(a, period) || a.mediaId - b.mediaId)[0] || null;
-        const recs = settings.recommendations ? recommend(all, watched, details, discovery, genres, studio?.name || null) : [];
+        const recs = settings.recommendations ? recommend(all, ranked, details, discovery) : [];
         const day = activeDay(watched, period);
         const summary = [
             `${watched.length} anime watched`,
@@ -246,7 +313,7 @@ function createDomain() {
             enabled: { watched: settings.includeWatched, completed: settings.includeCompleted, ratings: settings.includeRatings, recommendations: settings.recommendations }
         };
     }
-    return { fallbackArt, mediaFromBase, normalizeCollection, periodFor, buildSession };
+    return { fallbackArt, mediaFromBase, extractUserScore, scoreDiagnostics, normalizeCollection, periodFor, buildSession };
 }
 function createViewer() {
     function completedSlideDuration(count) {
@@ -279,16 +346,17 @@ function createViewer() {
 .chrome{position:absolute;z-index:20;top:0;left:0;right:0;padding:max(18px,2.3vh) clamp(22px,4vw,74px);display:grid;gap:15px}.progress{display:flex;gap:7px}.segment{height:4px;flex:1;border-radius:99px;background:rgba(255,255,255,.23);overflow:hidden}.segment>i{display:block;width:0;height:100%;background:#fff;box-shadow:0 0 12px rgba(255,255,255,.65)}
 .topline{display:flex;align-items:center;justify-content:space-between}.brand{display:flex;align-items:center;gap:12px;font-weight:760;letter-spacing:-.02em}.logo{display:flex;align-items:end;gap:3px;height:27px}.logo i{display:block;width:6px;border-radius:7px;background:linear-gradient(180deg,#ff99a8,#e84fe0 55%,#596dff)}.logo i:nth-child(1){height:12px}.logo i:nth-child(2){height:21px}.logo i:nth-child(3){height:27px}.logo i:nth-child(4){height:17px}.actions{display:flex;gap:9px}.icon-btn{width:42px;height:42px;border:1px solid rgba(255,255,255,.13);border-radius:50%;background:rgba(5,8,20,.52);backdrop-filter:blur(14px);display:grid;place-items:center;cursor:pointer;transition:transform .2s ease,background .2s}.icon-btn[hidden]{display:none}.icon-btn svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.icon-btn .filled{fill:currentColor;stroke:none}.icon-btn:hover{background:rgba(255,255,255,.13);transform:scale(1.05)}.icon-btn:focus-visible{outline:3px solid #fff;outline-offset:3px}
 .stage{position:absolute;inset:0;z-index:5}.slide{position:absolute;inset:0;padding:clamp(100px,14vh,145px) clamp(34px,8vw,140px) clamp(38px,7vh,75px);display:none;opacity:0;transform:scale(1.025);transition:opacity .55s ease,transform .7s var(--ease)}.slide.active{display:flex;opacity:1;transform:scale(1)}
-.slide-inner{width:min(1420px,100%);height:100%;margin:auto;display:flex;align-items:center;position:relative}.eyebrow{font-size:clamp(12px,1vw,16px);text-transform:uppercase;letter-spacing:.16em;color:#d8d9ff;font-weight:750}.display{font-size:clamp(58px,8.4vw,138px);line-height:.85;letter-spacing:-.065em;margin:14px 0 24px;max-width:920px}.gradient{background:linear-gradient(110deg,#fff 8%,#efc8ff 35%,#ec52d7 70%,#7c8fff);-webkit-background-clip:text;background-clip:text;color:transparent}.subtitle{font-size:clamp(17px,1.6vw,27px);line-height:1.45;color:rgba(255,255,255,.78);max-width:620px}.reveal>*{opacity:0;transform:translateY(28px);filter:blur(8px)}.active .reveal>*{animation:reveal .72s var(--ease) forwards}.active .reveal>*:nth-child(2){animation-delay:.1s}.active .reveal>*:nth-child(3){animation-delay:.2s}.active .reveal>*:nth-child(4){animation-delay:.3s}@keyframes reveal{to{opacity:1;transform:none;filter:none}}
+.slide-inner{width:min(1420px,100%);height:100%;margin:auto;display:flex;align-items:center;position:relative}.eyebrow{font-size:clamp(12px,1vw,16px);text-transform:uppercase;letter-spacing:.16em;color:#d8d9ff;font-weight:750}.display{padding-bottom:.12em;overflow:visible;font-size:clamp(58px,8.4vw,138px);line-height:1.02;letter-spacing:-.065em;margin:14px 0 24px;max-width:920px}.gradient{display:inline-block;line-height:1.1;padding:.05em .03em .12em 0;overflow:visible;background:linear-gradient(110deg,#fff 8%,#efc8ff 35%,#ec52d7 70%,#7c8fff);-webkit-background-clip:text;background-clip:text;color:transparent}.subtitle{font-size:clamp(17px,1.6vw,27px);line-height:1.45;color:rgba(255,255,255,.78);max-width:620px}.reveal>*{opacity:0;transform:translateY(28px);filter:blur(8px)}.active .reveal>*{animation:reveal .72s var(--ease) forwards}.active .reveal>*:nth-child(2){animation-delay:.1s}.active .reveal>*:nth-child(3){animation-delay:.2s}.active .reveal>*:nth-child(4){animation-delay:.3s}@keyframes reveal{to{opacity:1;transform:none;filter:none}}
 .count-layout{justify-content:space-between;gap:6vw;overflow:visible}.count-copy{max-width:620px;overflow:visible}.mega{font-size:clamp(84px,15vw,230px);line-height:.92;font-weight:900;letter-spacing:-.065em;padding:.05em .08em .12em .02em;overflow:visible;text-shadow:0 0 50px rgba(235,70,215,.3)}.posters{position:relative;width:min(42vw,610px);height:min(64vh,620px)}.poster{position:absolute;left:50%;top:50%;width:clamp(130px,15vw,220px);aspect-ratio:2/3;object-fit:cover;border-radius:18px;border:1px solid rgba(255,255,255,.3);box-shadow:0 30px 80px rgba(0,0,0,.55);transform:translate(-50%,-50%) rotate(var(--r)) translateX(var(--x));transition:transform 1s var(--ease);animation:posterIn .9s var(--ease) both;animation-delay:var(--d)}@keyframes posterIn{from{opacity:0;transform:translate(-50%,-40%) rotate(0) scale(.65)}}.shuffle-deck{position:relative;width:min(49vw,700px);height:min(60vh,580px);overflow:visible}.shuffle-poster{position:absolute;top:50%;left:50%;width:clamp(115px,13vw,190px);aspect-ratio:2/3;object-fit:cover;border-radius:18px;border:1px solid rgba(255,255,255,.32);box-shadow:0 24px 70px rgba(0,0,0,.55);transform:translate(-50%,-50%);transition:left 1s var(--ease),transform 1s var(--ease),filter 1s var(--ease);will-change:left,transform}
-.genre-layout{display:grid;grid-template-columns:minmax(300px,.8fr) minmax(400px,1.2fr);gap:9vw;align-items:center}.genre-name{font-size:clamp(64px,9vw,150px);font-weight:900;letter-spacing:-.06em;line-height:.86}.donut{width:min(24vw,310px);aspect-ratio:1;border-radius:50%;display:grid;place-items:center;margin-top:30px;background:conic-gradient(var(--pink) calc(var(--p)*1%),rgba(255,255,255,.13) 0);box-shadow:0 0 55px rgba(230,65,214,.25)}.donut:after{content:attr(data-label);width:67%;aspect-ratio:1;border-radius:50%;background:rgba(7,10,22,.9);display:grid;place-items:center;font-size:clamp(30px,4vw,60px);font-weight:850}.bars{display:grid;gap:18px}.bar-row{display:grid;grid-template-columns:130px 1fr 48px;gap:18px;align-items:center}.bar-track{height:12px;background:rgba(255,255,255,.1);border-radius:99px;overflow:hidden}.bar-fill{height:100%;width:0;border-radius:inherit;background:linear-gradient(90deg,var(--blue),var(--pink));transition:width 1.2s var(--ease) .25s}.active .bar-fill{width:var(--w)}
-.rank-layout{display:grid;grid-template-columns:minmax(300px,.9fr) minmax(420px,1.1fr);gap:7vw}.rank-poster{justify-self:end;width:min(31vw,440px);max-height:66vh;aspect-ratio:2/3;object-fit:cover;border-radius:26px;border:1px solid rgba(255,255,255,.25);box-shadow:0 40px 100px rgba(0,0,0,.6),0 0 70px color-mix(in srgb,var(--accent) 35%,transparent);animation:rankPoster 1s var(--ease) both}@keyframes rankPoster{from{opacity:0;transform:translateX(-60px) rotate(-5deg) scale(.88)}}.rank-number{font-size:clamp(82px,13vw,220px);font-weight:950;letter-spacing:-.08em;line-height:.72;color:var(--accent)}.rank-title{font-size:clamp(38px,5vw,78px);line-height:.96;letter-spacing:-.045em;margin:26px 0 18px}.winner .rank-poster{width:min(30vw,440px);box-shadow:0 40px 110px rgba(0,0,0,.65),0 0 120px rgba(241,79,217,.45)}.winner .rank-number{background:linear-gradient(100deg,#fff,#ff92e9,#7b8cff);-webkit-background-clip:text;color:transparent}
-.overview{align-items:flex-end}.overview-grid{width:100%;display:grid;grid-template-columns:repeat(5,1fr);align-items:end;gap:14px}.overview-card{position:relative;min-width:0;border-radius:18px;overflow:hidden;border:1px solid rgba(255,255,255,.18);background:var(--glass);box-shadow:0 20px 60px rgba(0,0,0,.35);animation:cardUp .7s var(--ease) both;animation-delay:var(--d)}.overview-card:first-child{transform:translateY(-28px);border-color:rgba(255,114,219,.7)}@keyframes cardUp{from{opacity:0;transform:translateY(60px)}}.overview-card img{display:block;width:100%;aspect-ratio:2/3;object-fit:cover}.card-copy{padding:14px}.card-rank{position:absolute;top:12px;left:12px;font-size:30px;font-weight:900;text-shadow:0 3px 12px #000}.card-title{font-weight:750;white-space:nowrap;text-overflow:ellipsis;overflow:hidden}.meta{font-size:13px;color:rgba(255,255,255,.62);margin-top:5px}
-.spotlight{display:grid;grid-template-columns:minmax(300px,1fr) minmax(310px,.9fr);gap:7vw}.spotlight-copy{align-self:center}.spotlight-title{font-size:clamp(46px,6.2vw,102px);line-height:.93;letter-spacing:-.055em;margin:15px 0}.hero-card{position:relative;justify-self:end;width:min(34vw,470px);height:min(66vh,650px);border-radius:28px;overflow:hidden;border:1px solid rgba(255,255,255,.22);box-shadow:0 40px 100px rgba(0,0,0,.58)}.hero-card img{width:100%;height:100%;object-fit:cover}.hero-card:after{content:"";position:absolute;inset:45% 0 0;background:linear-gradient(transparent,rgba(5,7,16,.96))}.hero-details{position:absolute;z-index:2;left:28px;right:28px;bottom:26px}.score{font-size:clamp(62px,8vw,120px);font-weight:930;letter-spacing:-.07em}.score small{font-size:.25em;color:rgba(255,255,255,.7);letter-spacing:0}
-.studio-wall{position:absolute;right:0;width:55%;height:74%;display:grid;grid-template-columns:repeat(4,1fr);gap:12px;opacity:.78;mask-image:linear-gradient(90deg,transparent,#000 25%)}.studio-wall img{width:100%;height:100%;min-height:0;object-fit:cover;border-radius:16px}.studio-name{position:relative;z-index:2;font-size:clamp(70px,11vw,180px);font-weight:930;letter-spacing:-.07em;line-height:.8;max-width:850px}.compact-posters{display:flex;gap:10px;margin-top:28px}.compact-posters img{width:80px;aspect-ratio:2/3;object-fit:cover;border-radius:10px;border:1px solid rgba(255,255,255,.25)}
-.recommend{align-items:flex-start;padding-top:0}.recommend-head{display:flex;justify-content:space-between;align-items:end;margin:0 auto 18px;width:min(1120px,100%)}.recommend-head h2{font-size:clamp(32px,3.7vw,58px);margin:0;letter-spacing:-.045em}.rec-grid{display:grid;grid-template-columns:repeat(5,minmax(120px,180px));justify-content:center;gap:18px 22px;margin:auto}.rec-card{aspect-ratio:2/3;min-width:0;position:relative;overflow:hidden;border:1px solid rgba(255,255,255,.16);border-radius:15px;background:rgba(9,13,27,.7);animation:cardUp .6s var(--ease) both;animation-delay:calc(var(--i)*55ms)}.rec-card img{width:100%;height:100%;object-fit:cover}.rec-card:after{content:"";position:absolute;inset:38% 0 0;background:linear-gradient(transparent,rgba(5,8,18,.98) 70%)}.rec-copy{position:absolute;z-index:2;left:12px;right:12px;bottom:10px}.rec-copy b{font-size:13px;line-height:1.18;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:2.36em}.rec-rating{display:block;color:#ffd86b;font-size:12px;font-weight:800;margin-top:5px}.rec-rank{position:absolute;z-index:3;top:9px;left:10px;width:28px;height:28px;border-radius:8px;background:rgba(6,8,18,.78);display:grid;place-items:center;font-weight:850}.reason{display:inline-block;font-size:9px;padding:3px 6px;border-radius:99px;background:rgba(126,94,255,.58);margin-top:5px;white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis}
-.final{align-items:center;justify-content:center;text-align:center}.final h1{font-size:clamp(50px,7vw,110px);line-height:.9;letter-spacing:-.06em;margin:12px 0 35px}.summary{display:grid;grid-template-columns:repeat(2,minmax(260px,1fr));gap:10px;width:min(850px,90vw);text-align:left}.summary div{padding:16px 20px;border:1px solid var(--line);border-radius:14px;background:rgba(9,12,26,.45);backdrop-filter:blur(12px)}.thanks{margin-top:34px;font-size:clamp(18px,2vw,28px);color:#f0cbff}
+.genre-layout{display:grid;grid-template-columns:minmax(300px,.8fr) minmax(400px,1.2fr);gap:9vw;align-items:center}.genre-name{font-size:clamp(64px,9vw,150px);font-weight:900;letter-spacing:-.06em;line-height:1}.donut{width:min(24vw,310px);aspect-ratio:1;border-radius:50%;display:grid;place-items:center;margin-top:30px;background:conic-gradient(var(--pink) calc(var(--p)*1%),rgba(255,255,255,.13) 0);box-shadow:0 0 55px rgba(230,65,214,.25)}.donut:after{content:attr(data-label);width:67%;aspect-ratio:1;border-radius:50%;background:rgba(7,10,22,.9);display:grid;place-items:center;font-size:clamp(30px,4vw,60px);font-weight:850}.bars{display:grid;gap:18px}.bar-row{display:grid;grid-template-columns:130px 1fr 48px;gap:18px;align-items:center}.bar-track{height:12px;background:rgba(255,255,255,.1);border-radius:99px;overflow:hidden}.bar-fill{height:100%;width:0;border-radius:inherit;background:linear-gradient(90deg,var(--blue),var(--pink));transition:width 1.2s var(--ease) .25s}.active .bar-fill{width:var(--w)}
+.rank-layout{display:grid;grid-template-columns:minmax(300px,.9fr) minmax(420px,1.1fr);gap:7vw}.rank-poster{justify-self:end;width:min(31vw,440px);max-height:66vh;aspect-ratio:2/3;object-fit:cover;border-radius:26px;border:1px solid rgba(255,255,255,.25);box-shadow:0 40px 100px rgba(0,0,0,.6),0 0 70px color-mix(in srgb,var(--accent) 35%,transparent);animation:rankPoster 1s var(--ease) both}@keyframes rankPoster{from{opacity:0;transform:translateX(-60px) rotate(-5deg) scale(.88)}}.rank-number{font-size:clamp(82px,13vw,220px);font-weight:950;letter-spacing:-.08em;line-height:1;color:var(--accent)}.rank-title{font-size:clamp(38px,5vw,78px);line-height:1;letter-spacing:-.045em;margin:26px 0 18px}.winner .rank-poster{width:min(32vw,455px);border:2px solid #FFD76A;box-shadow:0 40px 110px rgba(0,0,0,.65),0 0 65px rgba(255,215,106,.28)}.winner .rank-number{color:#FFD76A;text-shadow:0 0 32px rgba(255,215,106,.2)}
+.overview{align-items:flex-end}.overview-grid{width:100%;display:grid;grid-template-columns:repeat(5,1fr);align-items:end;gap:14px}.overview-card{position:relative;min-width:0;border-radius:18px;overflow:hidden;border:1px solid rgba(255,255,255,.18);background:var(--glass);box-shadow:0 20px 60px rgba(0,0,0,.35);animation:cardUp .7s var(--ease) both;animation-delay:var(--d)}.overview-card.winner-card{translate:0 -16px;scale:1.025;border:2px solid #FFD76A;box-shadow:0 20px 60px rgba(0,0,0,.35),0 0 32px rgba(255,215,106,.22)}.winner-card .card-rank{color:#FFD76A}@keyframes cardUp{from{opacity:0;transform:translateY(60px)}}.overview-card img{display:block;width:100%;aspect-ratio:2/3;object-fit:cover}.card-copy{padding:14px}.card-rank{position:absolute;top:12px;left:12px;font-size:30px;font-weight:900;text-shadow:0 3px 12px #000}.card-title{font-weight:750;white-space:nowrap;text-overflow:ellipsis;overflow:hidden}.meta{font-size:13px;color:rgba(255,255,255,.62);margin-top:5px}
+.spotlight{display:grid;grid-template-columns:minmax(300px,1fr) minmax(310px,.9fr);gap:7vw}.spotlight-copy{align-self:center}.spotlight-title{font-size:clamp(46px,6.2vw,102px);line-height:1;letter-spacing:-.055em;margin:15px 0}.hero-card{position:relative;justify-self:end;width:min(34vw,470px);height:min(66vh,650px);border-radius:28px;overflow:hidden;border:1px solid rgba(255,255,255,.22);box-shadow:0 40px 100px rgba(0,0,0,.58)}.hero-card img{width:100%;height:100%;object-fit:cover}.hero-card:after{content:"";position:absolute;inset:45% 0 0;background:linear-gradient(transparent,rgba(5,7,16,.96))}.hero-details{position:absolute;z-index:2;left:28px;right:28px;bottom:26px}.score{font-size:clamp(62px,8vw,120px);font-weight:930;letter-spacing:-.07em}.score small{font-size:.25em;color:rgba(255,255,255,.7);letter-spacing:0}
+.studio-wall{position:absolute;right:0;width:55%;height:74%;display:grid;grid-template-columns:repeat(4,1fr);gap:12px;opacity:.78;mask-image:linear-gradient(90deg,transparent,#000 25%)}.studio-wall img{width:100%;height:100%;min-height:0;object-fit:cover;border-radius:16px}.studio-name{position:relative;z-index:2;font-size:clamp(70px,11vw,180px);font-weight:930;letter-spacing:-.07em;line-height:1;max-width:850px}.compact-posters{display:flex;gap:10px;margin-top:28px}.compact-posters img{width:80px;aspect-ratio:2/3;object-fit:cover;border-radius:10px;border:1px solid rgba(255,255,255,.25)}
+.recommend{align-items:flex-start}.recommend-head{display:flex;justify-content:space-between;align-items:end;margin:0 auto 18px;width:min(1120px,100%)}.recommend-head h2{font-size:clamp(32px,3.7vw,58px);margin:0;letter-spacing:-.045em}.rec-grid{display:grid;grid-template-columns:repeat(5,minmax(120px,180px));justify-content:center;gap:18px 22px;margin:auto}.rec-card{aspect-ratio:2/3;min-width:0;position:relative;overflow:hidden;border:1px solid rgba(255,255,255,.16);border-radius:15px;background:rgba(9,13,27,.7);animation:cardUp .6s var(--ease) both;animation-delay:calc(var(--i)*55ms)}.rec-card img{width:100%;height:100%;object-fit:cover}.rec-card:after{content:"";position:absolute;inset:38% 0 0;background:linear-gradient(transparent,rgba(5,8,18,.98) 70%)}.rec-copy{position:absolute;z-index:2;left:12px;right:12px;bottom:10px}.rec-copy b{font-size:13px;line-height:1.18;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:2.36em}.rec-rating{display:block;color:#ffd86b;font-size:12px;font-weight:800;margin-top:5px}.rec-rank{position:absolute;z-index:3;top:9px;left:10px;width:28px;height:28px;border-radius:8px;background:rgba(6,8,18,.78);display:grid;place-items:center;font-weight:850}.reason{display:inline-block;font-size:9px;padding:3px 6px;border-radius:99px;background:rgba(126,94,255,.58);margin-top:5px;white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+.final{align-items:center;justify-content:center;text-align:center}.final h1{font-size:clamp(50px,7vw,110px);line-height:1;letter-spacing:-.06em;margin:12px 0 35px}.summary{display:grid;grid-template-columns:repeat(2,minmax(260px,1fr));gap:10px;width:min(850px,90vw);text-align:left}.summary div{padding:16px 20px;border:1px solid var(--line);border-radius:14px;background:rgba(9,12,26,.45);backdrop-filter:blur(12px)}.thanks{margin-top:34px;font-size:clamp(18px,2vw,28px);color:#f0cbff}
 .nav-hint{position:absolute;z-index:15;bottom:22px;left:50%;transform:translateX(-50%);font-size:12px;color:rgba(255,255,255,.45);pointer-events:none}.loading{position:absolute;inset:0;z-index:30;display:grid;place-items:center;background:#080b17;transition:opacity .45s}.loading.hidden{opacity:0;pointer-events:none}.loader{text-align:center}.loader .logo{margin:0 auto 18px;transform:scale(1.5);justify-content:center}.loader p{color:rgba(255,255,255,.66)}.sound-prompt{position:absolute;z-index:25;right:clamp(22px,4vw,74px);bottom:26px;border:1px solid var(--line);border-radius:99px;background:rgba(7,10,22,.7);padding:10px 15px;display:none}.sound-prompt.show{display:block}
+.display,.mega,.genre-name,.rank-number,.rank-title,.spotlight-title,.studio-name,.final h1{line-height:1.12;padding-top:.04em;padding-bottom:.14em;overflow:visible}.rank-metric{white-space:normal;line-height:1.4;overflow-wrap:anywhere}.card-copy{min-height:96px}
 @media(max-width:900px){.slide{padding-left:28px;padding-right:28px}.genre-layout,.rank-layout,.spotlight{grid-template-columns:1fr}.posters,.shuffle-deck,.hero-card,.rank-poster{display:none}.overview-grid{grid-template-columns:repeat(3,1fr)}.overview-card:nth-child(n+4){display:none}.rec-grid{grid-template-columns:repeat(2,minmax(120px,180px));gap:16px}.recommend{overflow:auto}.studio-wall{width:75%;opacity:.38}.summary{grid-template-columns:1fr}.brand span{display:none}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.001ms!important;animation-delay:0ms!important;transition-duration:.001ms!important}.bg-layer{transform:scale(1.08)!important}}
 </style></head><body tabindex="-1">
@@ -306,13 +374,13 @@ add('intro',arts(S.watched).length?arts(S.watched):S.heroArt,'<div class="slide-
 if(S.enabled.watched)add('watched',arts(S.watched),'<div class="slide-inner count-layout"><div class="count-copy reveal"><div class="eyebrow">You watched</div><div class="mega gradient" data-count="'+S.watched.length+'">0</div><h2>'+S.watched.length+' anime '+esc(S.period.context)+'</h2><p class="subtitle">Every title here is grounded in dated Seanime or AniList activity.</p></div><div class="posters">'+posters(S.watched)+'</div></div>');
 if(S.genres.length){const g=S.genres[0],genreAnime=S.watched.filter(m=>m.genres.includes(g.name));add('genres',arts(genreAnime),'<div class="slide-inner genre-layout"><div class="reveal"><div class="eyebrow">Your most watched genre was</div><div class="genre-name gradient">'+esc(g.name.toUpperCase())+'</div><div class="donut" style="--p:'+g.percentage+'" data-label="'+g.percentage+'%"></div></div><div class="bars">'+S.genres.map(x=>'<div class="bar-row"><b>'+esc(x.name)+'</b><div class="bar-track"><div class="bar-fill" style="--w:'+x.percentage+'%"></div></div><span>'+x.percentage+'%</span></div>').join('')+'</div></div>');}
 S.topFive.slice().reverse().forEach((m)=>add('rank '+(m.rank===1?'winner':''),[artOf(m)],'<div class="slide-inner rank-layout"><img class="rank-poster" style="--accent:'+esc(m.color)+'" data-src="'+img(m.cover)+'" alt="'+esc(m.title)+' poster"><div class="reveal" style="--accent:'+esc(m.color)+'"><div class="eyebrow">Your Top 5 Anime</div><div class="rank-number">#'+m.rank+'</div><h2 class="rank-title">'+esc(m.title)+'</h2><p class="subtitle">'+esc(m.metric)+'</p></div></div>',m.rank===1?8200:5600));
-if(S.topFive.length)add('overview',arts(S.topFive),'<div class="slide-inner overview"><div style="width:100%"><div class="reveal"><div class="eyebrow">The full ranking</div><h2 style="font-size:clamp(40px,5vw,74px);margin:8px 0 28px">Your Top '+S.topFive.length+'</h2></div><div class="overview-grid">'+S.topFive.map((m,i)=>'<article class="overview-card" style="--d:'+(i*.1)+'s"><span class="card-rank">#'+m.rank+'</span><img data-src="'+img(m.cover)+'" alt=""><div class="card-copy"><div class="card-title">'+esc(m.title)+'</div><div class="meta">'+esc(m.metric)+'</div></div></article>').join('')+'</div></div></div>',7800);
+if(S.topFive.length)add('overview',arts(S.topFive),'<div class="slide-inner overview"><div style="width:100%"><div class="reveal"><div class="eyebrow">The full ranking</div><h2 style="font-size:clamp(40px,5vw,74px);margin:8px 0 28px">Your Top '+S.topFive.length+'</h2></div><div class="overview-grid">'+S.topFive.map((m,i)=>'<article class="overview-card '+(m.rank===1?'winner-card':'')+'" style="--d:'+(i*.1)+'s"><span class="card-rank">#'+m.rank+'</span><img data-src="'+img(m.cover)+'" alt=""><div class="card-copy"><div class="card-title">'+esc(m.title)+'</div><div class="meta rank-metric">'+esc(m.metric)+'</div></div></article>').join('')+'</div></div></div>',7800);
 if(S.enabled.ratings&&S.highestRated)add('rated',[artOf(S.highestRated)],'<div class="slide-inner spotlight"><div class="spotlight-copy reveal"><div class="eyebrow">Your highest rated anime</div><h2 class="spotlight-title">'+esc(S.highestRated.title)+'</h2><div class="score gradient">'+INPUT.scoreLabels.highestRated+'<small> / 10</small></div><p class="subtitle">'+esc((S.highestRated.genres||[]).slice(0,3).join(' · '))+(S.highestRatedStudio?' · '+esc(S.highestRatedStudio):'')+' · '+esc(S.highestRated.progress)+' episodes progress</p></div><div class="hero-card"><img data-src="'+img(S.highestRated.cover)+'" alt="'+esc(S.highestRated.title)+' poster"><div class="hero-details"><b>Your score</b><div>'+INPUT.scoreLabels.highestRated+'/10</div></div></div></div>');
 if(S.topStudio)add('studio',arts(S.topStudio.anime),'<div class="slide-inner"><div class="studio-wall">'+S.topStudio.anime.slice(0,8).map(m=>'<img data-src="'+img(m.cover)+'" alt="">').join('')+'</div><div class="reveal" style="position:relative;z-index:3"><div class="eyebrow">You spent the most progress with</div><div class="studio-name gradient">'+esc(S.topStudio.name)+'</div><p class="subtitle">Based on studio metadata available for your most engaged titles.</p><div class="compact-posters">'+S.topStudio.anime.slice(0,6).map(m=>'<img data-src="'+img(m.cover)+'" alt="'+esc(m.title)+'">').join('')+'</div></div></div>');
 if(S.enabled.completed)add('completed',arts(S.completed),'<div class="slide-inner count-layout"><div class="count-copy reveal"><div class="eyebrow">You completed</div><div class="mega gradient" data-count="'+S.completed.length+'">0</div><h2>'+S.completed.length+' anime '+esc(S.period.context)+'</h2></div><div class="shuffle-deck">'+shufflePosters(S.completed)+'</div></div>',INPUT.completedDuration);
 if(S.enabled.ratings)add('average',S.highestRated?[artOf(S.highestRated)]:S.heroArt,'<div class="slide-inner final"><div class="reveal"><div class="eyebrow">Your average score</div><div class="display gradient">'+(INPUT.scoreLabels.average===null?'—':INPUT.scoreLabels.average)+'</div><p class="subtitle" style="margin:auto">'+(S.averageScore===null?'No anime in this period had a user score. That’s okay—your recap stays honest.':'Calculated only from scores you gave, never AniList community scores.')+'</p></div></div>');
 if(S.activeDay)add('day',arts(S.watched),'<div class="slide-inner"><div class="reveal"><div class="eyebrow">Your most active saved-watch weekday</div><h2 class="display gradient">'+esc(S.activeDay.label)+'</h2><p class="subtitle">'+S.activeDay.count+' title'+(S.activeDay.count===1?'':'s')+' had their latest saved watch record on this weekday.</p><p class="meta" style="max-width:620px;margin-top:25px">'+esc(S.activeDay.interpretation)+'</p></div></div>');
-if(S.enabled.recommendations&&S.recommendations.length)add('recommend',arts(S.recommendations),'<div class="slide-inner recommend"><div style="width:100%"><div class="recommend-head"><div><div class="eyebrow">What comes next</div><h2>Most likely next watch</h2></div><span class="meta">Taste-fit shortlist</span></div><div class="rec-grid">'+S.recommendations.map((m,i)=>'<article class="rec-card" style="--i:'+i+'"><span class="rec-rank">'+(i+1)+'</span><img data-src="'+img(m.cover)+'" alt=""><div class="rec-copy"><b>'+esc(m.title)+'</b><span class="rec-rating">★ '+(m.globalScore?(m.globalScore/10).toFixed(1):'—')+'</span><span class="reason">'+esc(m.reason)+'</span></div></article>').join('')+'</div></div></div>',10000);
+if(S.enabled.recommendations&&S.recommendations.length)add('recommend',arts(S.recommendations),'<div class="slide-inner recommend"><div style="width:100%"><div class="recommend-head"><div><div class="eyebrow">What comes next</div><h2>Most likely next watch</h2></div><span class="meta">Taste-fit shortlist</span></div><div class="rec-grid">'+S.recommendations.map((m,i)=>'<article class="rec-card" style="--i:'+i+'"><span class="rec-rank">'+(i+1)+'</span><img data-src="'+img(m.cover)+'" alt=""><div class="rec-copy"><b>'+esc(m.title)+'</b><span class="rec-rating">★ '+(m.globalScore?(m.globalScore/10).toFixed(1):'—')+' AniList</span><span class="reason">'+esc(m.reason)+'</span></div></article>').join('')+'</div></div></div>',10000);
 add('final',arts(S.topFive),'<div class="slide-inner final"><div class="reveal"><div class="eyebrow">'+esc(S.period.label)+' in a nutshell</div><h1>That was your<br><span class="gradient">Seanime Wrapped</span></h1><div class="summary">'+S.summary.map(x=>'<div>'+esc(x)+'</div>').join('')+'</div><div class="thanks">Thanks for watching.</div></div></div>',12000);
 const FALLBACK="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1200 675'%3E%3Cdefs%3E%3ClinearGradient id='g'%3E%3Cstop stop-color='%234c5cff'/%3E%3Cstop offset='.55' stop-color='%23bd42d8'/%3E%3Cstop offset='1' stop-color='%23101525'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='1200' height='675' fill='%23070a14'/%3E%3Ccircle cx='380' cy='270' r='330' fill='url(%23g)' opacity='.8'/%3E%3C/svg%3E";const PAUSE_ICON='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14M16 5v14"/></svg>',PLAY_ICON='<svg viewBox="0 0 24 24" aria-hidden="true"><path class="filled" d="m8 5 11 7-11 7z"/></svg>',SOUND_ICON='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5 6.5 9H3v6h3.5l4.5 4V5ZM15 9.5c1.2 1.4 1.2 3.6 0 5M18 7c2.7 2.8 2.7 7.2 0 10"/></svg>',MUTED_ICON='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5 6.5 9H3v6h3.5l4.5 4V5ZM16 10l5 5M21 10l-5 5"/></svg>';const MAX_PRELOAD_AHEAD=2;const failedArt=new Set(),artLoads=new Map(),handledKeys=new WeakSet();const app=document.getElementById('app'),stage=document.getElementById('stage'),progress=document.getElementById('progress'),loading=document.getElementById('loading'),mute=document.getElementById('mute'),pause=document.getElementById('pause'),prompt=document.getElementById('soundPrompt');let index=0,paused=!INPUT.settings.autoAdvance,elapsed=0,last=0,raf=0,closed=false,bgFlip=false,audio=null,backgroundIndex=0,shuffleCycle=-1;let effectRafs=[];
 stage.innerHTML=slides.map((s,i)=>'<article class="slide '+esc(s.kind)+'" data-index="'+i+'">'+s.html+'</article>').join('');progress.innerHTML=slides.map(()=>'<span class="segment"><i></i></span>').join('');
@@ -358,6 +426,9 @@ function init() {
         const audioRegistry = $shared.use("seanime-wrapped/audio/v1");
         const SETTINGS_KEY = "settings-v1";
         const DETAIL_CACHE_KEY = "metadata-cache-v1";
+        const RATING_CACHE_KEY = "community-ratings-v1";
+        // Set true for one local validation build. Reports counts/shapes only.
+        const DEBUG_SCORES = false;
         const LAST_SESSION_KEY = "last-session-v1";
         const LAST_GENERATED_KEY = "last-generated-v1";
         const icon = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='1' x2='1' y2='0'%3E%3Cstop stop-color='%235b6cff'/%3E%3Cstop offset='.55' stop-color='%23d946ef'/%3E%3Cstop offset='1' stop-color='%23ff7b8b'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='128' height='128' rx='30' fill='%230b1020'/%3E%3Cpath d='M24 91V68a8 8 0 0 1 16 0v23zm22 0V45a8 8 0 0 1 16 0v46zm22 0V28a8 8 0 0 1 16 0v63zm22 0V54a8 8 0 0 1 16 0v37z' fill='url(%23g)'/%3E%3C/svg%3E";
@@ -512,6 +583,42 @@ function init() {
                 console.warn("Seanime Wrapped relation collection unavailable", cause);
             }
         }
+        function enrichRecommendationRatings(session) {
+            const cache = forceRefresh ? {} : ($storage.get(RATING_CACHE_KEY) || {});
+            const now = Date.now();
+            const missing = session.recommendations.filter((media) => {
+                if (media.globalScore !== null && media.globalScore > 0)
+                    return false;
+                const hit = cache[String(media.mediaId)];
+                if (hit && now - hit.at < 7 * 86400000) {
+                    media.globalScore = hit.score;
+                    return false;
+                }
+                return true;
+            });
+            if (!missing.length)
+                return;
+            try {
+                // Native customQuery returns the unwrapped GraphQL data object. Public
+                // community scores need no token; one request covers at most ten IDs.
+                const result = $anilist.customQuery({
+                    query: "query WrappedRatings($ids: [Int]) { Page(page: 1, perPage: 10) { media(id_in: $ids, type: ANIME) { id meanScore } } }",
+                    variables: { ids: missing.map((media) => media.mediaId) }
+                }, "");
+                for (const item of result?.Page?.media || []) {
+                    const score = domain.mediaFromBase(item).globalScore;
+                    cache[String(item.id)] = { score: score && score > 0 ? score : null, at: now };
+                    const candidate = missing.find((media) => media.mediaId === Number(item.id));
+                    if (candidate)
+                        candidate.globalScore = cache[String(item.id)].score;
+                }
+                $storage.set(RATING_CACHE_KEY, cache);
+            }
+            catch {
+                // Failed requests are not negative-cached, so the next session retries.
+                ctx.toast.warning("Some AniList community ratings are temporarily unavailable.");
+            }
+        }
         function chooseSoundtrack() {
             if (settings.soundtrack === "Off")
                 return { source: "", label: "" };
@@ -537,6 +644,8 @@ function init() {
             tray.update();
             try {
                 const collection = $anilist.getRawAnimeCollection(forceRefresh);
+                if (DEBUG_SCORES)
+                    console.warn("Wrapped score diagnostics", JSON.stringify(domain.scoreDiagnostics(collection)));
                 const history = ctx.continuity.getWatchHistory();
                 const all = domain.normalizeCollection(collection, history);
                 if (!all.length)
@@ -545,6 +654,7 @@ function init() {
                 const metadata = collectMetadata(preliminary);
                 collectRelationMetadata(metadata, preliminary);
                 const session = domain.buildSession(all, metadata, [], settings);
+                enrichRecommendationRatings(session);
                 if (!session.watched.length && settings.includeWatched) {
                     ctx.toast.warning("No defensible watch activity was found for this period. Wrapped will show the sections that are available.");
                 }
@@ -577,6 +687,7 @@ function init() {
         const refreshHandler = ctx.eventHandler("seanime-wrapped-refresh", () => {
             try {
                 $storage.remove(DETAIL_CACHE_KEY);
+                $storage.remove(RATING_CACHE_KEY);
                 $storage.remove(LAST_SESSION_KEY);
             }
             catch { }

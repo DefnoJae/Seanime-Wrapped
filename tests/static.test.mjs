@@ -101,6 +101,14 @@ test("generated viewer document contains syntactically valid runtime JavaScript"
   for (const script of scripts) assert.doesNotThrow(() => new Function(script[1]));
 });
 
+test("both winner views have explicit gold styling and large headings have safe line boxes", () => {
+  assert.match(viewerSource, /m\.rank===1\?'winner-card'/);
+  assert.match(viewerSource, /\.overview-card\.winner-card\{[^}]*border:2px solid #FFD76A/);
+  assert.match(viewerSource, /\.winner \.rank-number\{color:#FFD76A/);
+  assert.match(viewerSource, /\.display,\.mega,\.genre-name,\.rank-number,\.rank-title,\.spotlight-title,\.studio-name,\.final h1\{line-height:1\.12;[^}]*overflow:visible/);
+  assert.doesNotMatch(viewerSource, /line-height:\.(?:7\d*|8\d*)(?:;|\})/);
+});
+
 test("silent viewer hides soundtrack control and uses only SVG control icons", () => {
   const emptySession = {
     version: 1, generatedAt: new Date(0).toISOString(),

@@ -88,16 +88,50 @@ export function createDomain() {
   const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
   function numberOrNull(value: unknown): number | null {
+    // Goja can expose pointer-backed primitives as boxed host values.
+    if (value !== null && typeof value === "object" && typeof value.valueOf === "function") {
+      const primitive = value.valueOf();
+      if (typeof primitive === "number" || typeof primitive === "string") value = primitive;
+    }
+    if (typeof value === "string") {
+      if (!/^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(value.trim())) return null;
+      value = Number(value);
+    }
     return typeof value === "number" && Number.isFinite(value) ? value : null;
   }
 
-  function userScoreFromPoint100(value: unknown): number | null {
-    const score = numberOrNull(value);
-    return score === null ? null : Math.max(0, Math.min(10, score / 10));
+  // The upstream JSON field is score; Goja also exposes GetScore as getScore.
+  function scoreValue(entry: any): unknown {
+    return entry?.score ?? (typeof entry?.getScore === "function" ? entry.getScore() : null);
+  }
+
+  function extractUserScore(entry: any): number | null {
+    const score = numberOrNull(scoreValue(entry));
+    if (score === null || score <= 0 || score > 100) return null;
+    // Compatibility for normalized adapters. Values <=10 are ambiguous without
+    // format metadata; preserve them per the plugin's 0-10 adapter contract.
+    return score > 10 ? score / 10 : score;
+  }
+
+  function scoreDiagnostics(collection: any) {
+    let entries = 0, rated = 0;
+    const shapes: Record<string, number> = {};
+    for (const list of collection?.MediaListCollection?.lists || []) {
+      for (const entry of list?.entries || []) {
+        entries++;
+        const value = scoreValue(entry), numeric = numberOrNull(value);
+        if (extractUserScore(entry) !== null) rated++;
+        const field = entry?.score != null ? "score" : typeof entry?.getScore === "function" ? "getScore()" : "missing";
+        const shape = `${field}:${value === null ? "null" : typeof value}:${numeric === null ? "missing/invalid" : numeric <= 0 ? "zero/negative" : numeric <= 10 ? "1-10" : "11-100"}`;
+        shapes[shape] = (shapes[shape] || 0) + 1;
+      }
+    }
+    return { entries, rated, shapes };
   }
 
   function timestamp(value: unknown): number | null {
-    if (typeof value === "number" && Number.isFinite(value)) return value > 1e12 ? value : value * 1000;
+    const numeric = numberOrNull(value);
+    if (numeric !== null) return numeric > 1e12 ? numeric : numeric * 1000;
     if (typeof value !== "string" || !value) return null;
     const parsed = Date.parse(value);
     return Number.isFinite(parsed) ? parsed : null;
@@ -119,11 +153,11 @@ export function createDomain() {
       cover: media?.coverImage?.extraLarge || media?.coverImage?.large || media?.coverImage?.medium || fallbackArt,
       banner: media?.bannerImage || media?.coverImage?.extraLarge || media?.coverImage?.large || fallbackArt,
       color: media?.coverImage?.color || "#8b5cf6",
-      genres: Array.isArray(media?.genres) ? media.genres.filter((genre: unknown) => typeof genre === "string") : [],
+      genres: Array.isArray(media?.genres) ? media.genres.map((genre: any) => genre?.valueOf()).filter((genre: unknown) => typeof genre === "string") : [],
       globalScore: numberOrNull(media?.meanScore),
       // getRawAnimeCollection requests POINT_100 scores. Wrapped presents user
       // ratings on a 0-10 scale, while AniList meanScore remains POINT_100.
-      userScore: userScoreFromPoint100(entry?.score),
+      userScore: extractUserScore(entry),
       status: String(entry?.status || "UNKNOWN"),
       progress: Math.max(0, Number(entry?.progress || 0)),
       episodes: numberOrNull(media?.episodes),
@@ -146,7 +180,12 @@ export function createDomain() {
         if (!id) continue;
         const normalized = mediaFromBase(media, entry, watchHistory[id]);
         const existing = byId[id];
-        if (!existing || normalized.updatedAt! > (existing.updatedAt || 0)) byId[id] = normalized;
+        if (!existing) byId[id] = normalized;
+        else {
+          const newer = (normalized.updatedAt || 0) > (existing.updatedAt || 0) ? normalized : existing;
+          const older = newer === normalized ? existing : normalized;
+          byId[id] = { ...newer, userScore: newer.userScore ?? older.userScore, globalScore: newer.globalScore ?? older.globalScore };
+        }
       }
     }
     return Object.keys(byId).map((id) => byId[Number(id)]).sort((a, b) => a.mediaId - b.mediaId);
@@ -196,9 +235,11 @@ export function createDomain() {
   }
 
   function engagement(media: MediaRecord, period: ReturnType<typeof periodFor>): number {
-    const historyInPeriod = inWindow(media.historyAt, period) ? 1 : 0;
     const progress = Math.max(media.progress, media.historyEpisode || 0);
-    return historyInPeriod * 1_000_000 + progress * 1_000 + (media.status === "COMPLETED" ? 100 : 0) + (media.userScore || 0) * 3;
+    const absolute = Math.min(Math.log1p(progress) / Math.log1p(100), 1);
+    const completion = media.episodes && media.episodes > 0 ? Math.min(progress / media.episodes, 1) : absolute;
+    const normalized = .85 * completion + .15 * absolute;
+    return .6 * ((media.userScore || 0) / 10) + .4 * normalized;
   }
 
   function rankMedia(watched: MediaRecord[], period: ReturnType<typeof periodFor>): RankedMedia[] {
@@ -211,7 +252,7 @@ export function createDomain() {
       ...media,
       rank: index + 1,
       engagementScore: engagement(media, period),
-      metric: `${Math.max(media.progress, media.historyEpisode || 0)} episode${Math.max(media.progress, media.historyEpisode || 0) === 1 ? "" : "s"} progress`
+      metric: `${media.userScore ? `Your score ★ ${media.userScore.toFixed(1)} · ` : ""}${Math.max(media.progress, media.historyEpisode || 0)} episode${Math.max(media.progress, media.historyEpisode || 0) === 1 ? "" : "s"} progress`
     }));
   }
 
@@ -257,19 +298,38 @@ export function createDomain() {
     }
     pool.push(...discovery);
     const unique: Record<number, MediaRecord> = {};
-    for (const media of pool) if (media.mediaId && !unique[media.mediaId]) unique[media.mediaId] = media;
+    for (const media of pool) {
+      if (!media.mediaId) continue;
+      const prior = unique[media.mediaId];
+      unique[media.mediaId] = prior ? { ...prior, globalScore: prior.globalScore ?? media.globalScore, genres: Array.from(new Set([...prior.genres, ...media.genres])) } : media;
+    }
     return Object.keys(unique).map((id) => unique[Number(id)]);
   }
 
-  function recommend(all: MediaRecord[], watched: MediaRecord[], details: Record<number, StudioMetadata>, discovery: MediaRecord[], genres: GenreStat[], studioName: string | null): Recommendation[] {
+  function recommend(all: MediaRecord[], topFive: RankedMedia[], details: Record<number, StudioMetadata>, discovery: MediaRecord[]): Recommendation[] {
     const excluded = new Set(all.filter((media) => media.status === "COMPLETED" || media.status === "CURRENT" || media.status === "DROPPED").map((media) => media.mediaId));
     const planning = new Set(all.filter((media) => media.status === "PLANNING").map((media) => media.mediaId));
-    const topGenres = genres.slice(0, 3).map((genre) => genre.name);
-    return recommendationPool(all, watched, details, discovery).filter((media) => !excluded.has(media.mediaId)).map((media) => {
-      const overlaps = media.genres.filter((genre) => topGenres.includes(genre));
-      let score = (media.globalScore || 0) / 10 + overlaps.length * 18 + (planning.has(media.mediaId) ? 35 : 0);
-      let reason = planning.has(media.mediaId) ? "From your planning list" : overlaps.length ? `Matches ${overlaps[0]}` : "Highly rated for your tastes";
-      if (studioName && details[media.mediaId]?.studioNames?.includes(studioName)) { score += 12; reason = `From ${studioName}`; }
+    topFive.forEach((media) => excluded.add(media.mediaId));
+    return recommendationPool(all, topFive, details, discovery).filter((media) => !excluded.has(media.mediaId)).map((media) => {
+      let score = (media.globalScore || 0) / 10 + (planning.has(media.mediaId) ? 12 : 0);
+      let directRank = 0, studioRank = 0, matches = 0;
+      for (const seed of topFive) {
+        const weight = seed.rank === 1 ? 1.6 : seed.rank === 2 ? 1.3 : 1;
+        const detail = details[seed.mediaId];
+        const direct = detail?.recommendations.some((item) => item.mediaId === media.mediaId);
+        const relation = detail?.relations.some((item) => item.mediaId === media.mediaId);
+        const overlap = media.genres.filter((genre) => seed.genres.includes(genre)).length;
+        const sameStudio = detail?.studioNames.some((name) => details[media.mediaId]?.studioNames.includes(name));
+        if (direct || relation || overlap || sameStudio) matches++;
+        if (direct || relation) { score += (direct ? 45 : 30) * weight; if (!directRank) directRank = seed.rank; }
+        score += Math.min(overlap, 3) * 5 * weight;
+        if (sameStudio) { score += 12 * weight; if (!studioRank) studioRank = seed.rank; }
+      }
+      const reason = directRank ? `Recommended from your #${directRank}`
+        : studioRank ? `Same studio as your #${studioRank}`
+        : matches > 1 ? `Matches ${matches} of your Top 5`
+        : matches ? "Top-5 genre match"
+        : planning.has(media.mediaId) ? "Already in your planning list" : "AniList community pick";
       return { ...media, reason, affinityScore: score };
     }).sort((a, b) => b.affinityScore - a.affinityScore || (b.globalScore || 0) - (a.globalScore || 0) || a.mediaId - b.mediaId).slice(0, 10);
   }
@@ -282,12 +342,12 @@ export function createDomain() {
     const genres = genreStats(watched);
     const studio = topStudio(watched, details);
     const relevantById: Record<number, MediaRecord> = {};
-    for (const media of [...watched, ...completed]) relevantById[media.mediaId] = media;
+    for (const media of [...selectedMedia(all, period), ...completedMedia(all, period)]) relevantById[media.mediaId] = media;
     const relevant = Object.keys(relevantById).map((id) => relevantById[Number(id)]);
     const scored = settings.includeRatings ? relevant.filter((media) => media.userScore !== null && media.userScore! > 0) : [];
     const averageScore = scored.length ? Math.round((scored.reduce((sum, media) => sum + media.userScore!, 0) / scored.length) * 10) / 10 : null;
     const highestRated = scored.slice().sort((a, b) => b.userScore! - a.userScore! || engagement(b, period) - engagement(a, period) || a.mediaId - b.mediaId)[0] || null;
-    const recs = settings.recommendations ? recommend(all, watched, details, discovery, genres, studio?.name || null) : [];
+    const recs = settings.recommendations ? recommend(all, ranked, details, discovery) : [];
     const day = activeDay(watched, period);
     const summary = [
       `${watched.length} anime watched`,
@@ -321,7 +381,7 @@ export function createDomain() {
     };
   }
 
-  return { fallbackArt, mediaFromBase, normalizeCollection, periodFor, buildSession };
+  return { fallbackArt, mediaFromBase, extractUserScore, scoreDiagnostics, normalizeCollection, periodFor, buildSession };
 }
 
 export type WrappedDomain = ReturnType<typeof createDomain>;
