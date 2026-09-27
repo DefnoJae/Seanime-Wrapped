@@ -1,0 +1,7 @@
+node_modules/
+coverage/
+.DS_Store
+assets/audio/*
+!assets/audio/README.md
+!assets/audio/.gitkeep
+

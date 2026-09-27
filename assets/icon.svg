@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">Seanime Wrapped</title>
+  <defs>
+    <linearGradient id="g" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#5b6cff"/><stop offset=".52" stop-color="#d946ef"/><stop offset="1" stop-color="#ff7b8b"/>
+    </linearGradient>
+    <filter id="s" x="-50%" y="-40%" width="200%" height="200%"><feGaussianBlur stdDeviation="5"/></filter>
+  </defs>
+  <rect width="128" height="128" rx="30" fill="#0b1020"/>
+  <path d="M24 91V68a8 8 0 0 1 16 0v23zm22 0V45a8 8 0 0 1 16 0v46zm22 0V28a8 8 0 0 1 16 0v63zm22 0V54a8 8 0 0 1 16 0v37z" fill="url(#g)" opacity=".45" filter="url(#s)"/>
+  <path d="M24 91V68a8 8 0 0 1 16 0v23zm22 0V45a8 8 0 0 1 16 0v46zm22 0V28a8 8 0 0 1 16 0v63zm22 0V54a8 8 0 0 1 16 0v37z" fill="url(#g)"/>
+</svg>
