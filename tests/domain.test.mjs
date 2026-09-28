@@ -9,6 +9,7 @@ const now = new Date(2026, 8, 27, 12).getTime();
 function media(id, overrides = {}) {
   return {
     mediaId: id,
+    mediaType: "ANIME",
     title: `Anime ${id}`,
     cover: `https://img.test/${id}.jpg`,
     banner: `https://img.test/${id}-banner.jpg`,
@@ -76,21 +77,28 @@ test("personal rating materially affects ranking and bounded progress cannot dom
   assert.equal(domain.buildSession(equal, {}, [], config, now).topFive[0].mediaId, 5);
 });
 
-test("recommendations use only current Top 5 seeds and merge community scores across sources", () => {
-  const watched = Array.from({ length: 6 }, (_, i) => media(i + 1, { status: "COMPLETED", progress: 12, userScore: 10 - i }));
-  const fromFirst = media(20, { genres: [], globalScore: 84 });
-  const fromSixth = media(21, { genres: [], globalScore: 99 });
+test("recommendations allocate two unique ANIME titles to every Top 5 seed", () => {
+  const watched = Array.from({ length: 5 }, (_, i) => media(i + 1, { status: "COMPLETED", progress: 12, userScore: 10 - i }));
+  const shared = media(20, { genres: [], globalScore: 84 });
+  const manga = media(999, { mediaType: "MANGA", globalScore: 100 });
   const details = {
-    1: { studioNames: ["A"], recommendations: [fromFirst], relations: [] },
-    6: { studioNames: ["B"], recommendations: [fromSixth], relations: [] }
+    1: { studioNames: ["A"], recommendations: [shared, media(21), manga], relations: [] },
+    2: { studioNames: ["B"], recommendations: [shared, media(22), media(23)], relations: [] },
+    3: { studioNames: ["C"], recommendations: [media(24), media(25)], relations: [] },
+    4: { studioNames: ["D"], recommendations: [media(26), media(27)], relations: [] },
+    5: { studioNames: ["E"], recommendations: [media(28), media(29)], relations: [] }
   };
-  const planning = [media(20, { genres: [], globalScore: null }), media(22, { genres: [], globalScore: 95 })];
-  const session = domain.buildSession([...watched, ...planning], details, [], { ...settings, period: "all-time" }, now);
-  assert.equal(session.recommendations[0].mediaId, 20);
-  assert.equal(session.recommendations[0].reason, "Recommended from your #1");
-  assert.equal(session.recommendations[0].globalScore, 84);
-  assert.ok(!session.recommendations.some((item) => item.mediaId === 21));
-  assert.ok(!session.recommendations.some((item) => session.topFive.some((top) => top.mediaId === item.mediaId)));
+  const session = domain.buildSession(watched, details, [], { ...settings, period: "all-time" }, now);
+  assert.equal(session.recommendations.length, 10);
+  assert.equal(new Set(session.recommendations.map((item) => item.mediaId)).size, 10);
+  assert.ok(!session.recommendations.some((item) => item.mediaId === 999 || item.mediaType !== "ANIME"));
+  for (let rank = 1; rank <= 5; rank++) {
+    const group = session.recommendations.filter((item) => item.sourceRank === rank);
+    assert.equal(group.length, 2, `Top 5 #${rank} should own exactly two slots`);
+    assert.ok(group.every((item) => item.reason === `From your #${rank}`));
+  }
+  assert.equal(session.recommendations.filter((item) => item.mediaId === 20).length, 1, "shared candidates must be deduplicated");
+  assert.ok(!session.recommendations.filter((item) => item.sourceRank === 2).some((item) => item.mediaId === 20), "the later seed must advance past a duplicate");
 });
 
 test("bounded periods require watch, start, or completion evidence and ignore updatedAt alone", () => {
@@ -124,8 +132,18 @@ test("bulk-imported old anime cannot enter a recent Top 5", () => {
 test("period labels and weekday names are deterministic and contain no locale timestamps", () => {
   const month = domain.periodFor("month", now);
   const previous = domain.periodFor("previous-month", now);
+  const lastThree = domain.periodFor("last-3", now);
+  const lastSix = domain.periodFor("last-6", now);
   assert.equal(month.label, "September 2026");
   assert.equal(previous.label, "August 2026");
+  assert.equal(lastThree.label, "Your Last 3 Months");
+  assert.equal(lastSix.label, "Your Last 6 Months");
+  for (const period of [lastThree, lastSix]) {
+    const session = domain.buildSession([], {}, [], { ...settings, period: period.key }, now);
+    const html = createViewer().documentFor({ session, settings: { ...settings, period: period.key } });
+    assert.match(html, new RegExp(`"periodHeadline":"${period.label.replace(/^Your /, "")}"`));
+    assert.doesNotMatch(html, /Your Your Last/);
+  }
   assert.doesNotMatch(month.label + previous.label, /[\/:]|\d{1,2}:\d{2}/);
 
   const sunday = new Date(2026, 8, 27, 12).getTime();
@@ -159,6 +177,18 @@ test("ratings use only the user's score and completion uses completion dates", (
   assert.deepEqual(session.completed.map((item) => item.mediaId), [1]);
 });
 
+test("Highest Rated reuses the exact Top 5 number-one record", () => {
+  const september = new Date(2026, 8, 12, 12).getTime();
+  const all = [
+    media(1, { status: "COMPLETED", progress: 12, episodes: 12, historyAt: september, userScore: 8 }),
+    media(2, { status: "CURRENT", progress: 1, episodes: 12, historyAt: september, userScore: 10 })
+  ];
+  const session = domain.buildSession(all, {}, [], settings, now);
+  assert.equal(session.topFive[0].mediaId, 1);
+  assert.equal(session.highestRated, session.topFive[0]);
+  assert.equal(session.highestRated.mediaId, session.topFive[0].mediaId);
+});
+
 test("completed-in-period titles count as watched and their ratings drive the score slides", () => {
   const september = [5, 12, 19].map((day) => new Date(2026, 8, day, 12).getTime());
   const all = [9, 8, 7].map((score, index) => media(index + 1, {
@@ -183,11 +213,11 @@ test("POINT_100 collection scores normalize to 0-10 while global meanScore stays
       lists: [{ entries: [
         {
           score: 90, status: "CURRENT", progress: 8, updatedAt: september / 1000,
-          media: { id: 1, title: { userPreferred: "Ninety" }, meanScore: 94, episodes: 12, genres: ["Action"], coverImage: { large: "https://img.test/1.jpg" }, bannerImage: "https://img.test/1-banner.jpg" }
+          media: { id: 1, type: "ANIME", title: { userPreferred: "Ninety" }, meanScore: 94, episodes: 12, genres: ["Action"], coverImage: { large: "https://img.test/1.jpg" }, bannerImage: "https://img.test/1-banner.jpg" }
         },
         {
           score: 70, status: "CURRENT", progress: 4, updatedAt: september / 1000,
-          media: { id: 2, title: { userPreferred: "Seventy" }, meanScore: 71, episodes: 12, genres: ["Drama"], coverImage: { large: "https://img.test/2.jpg" }, bannerImage: "https://img.test/2-banner.jpg" }
+          media: { id: 2, type: "ANIME", title: { userPreferred: "Seventy" }, meanScore: 71, episodes: 12, genres: ["Drama"], coverImage: { large: "https://img.test/2.jpg" }, bannerImage: "https://img.test/2-banner.jpg" }
         }
       ] }]
     }
@@ -206,7 +236,7 @@ test("POINT_100 collection scores normalize to 0-10 while global meanScore stays
   assert.match(html, /"userScore":9/);
   assert.match(html, /"averageScore":8/);
   assert.match(html, /"scoreLabels":\{"highestRated":"9\.0","average":"8\.0"\}/);
-  assert.match(html, /INPUT\.scoreLabels\.highestRated\+'<small> \/ 10/);
+  assert.match(html, /INPUT\.scoreLabels\.highestRated===null\?'—':INPUT\.scoreLabels\.highestRated/);
   assert.match(html, /INPUT\.scoreLabels\.average===null\?'—':INPUT\.scoreLabels\.average/);
 });
 
@@ -224,10 +254,10 @@ test("all-time sessions keep the hero artwork seed bounded for large libraries",
 
 test("recommendations render ten unique candidates and exclude active/completed/dropped anime", () => {
   const september = new Date(2026, 8, 12, 12).getTime();
-  const watched = media(1, { status: "CURRENT", progress: 8, historyAt: september, genres: ["Action"] });
+  const watched = Array.from({ length: 5 }, (_, index) => media(index + 1, { status: "CURRENT", progress: 8 - index, historyAt: september, genres: ["Action"] }));
   const planning = Array.from({ length: 13 }, (_, index) => media(index + 10, { genres: ["Action"], status: "PLANNING" }));
   const excluded = media(99, { status: "DROPPED", genres: ["Action"] });
-  const session = domain.buildSession([watched, ...planning, excluded], {}, [], settings, now);
+  const session = domain.buildSession([...watched, ...planning, excluded], {}, [], settings, now);
   assert.equal(session.recommendations.length, 10);
   assert.equal(new Set(session.recommendations.map((item) => item.mediaId)).size, 10);
   assert.ok(session.recommendations.every((item) => item.status === "PLANNING"));

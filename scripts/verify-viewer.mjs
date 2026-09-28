@@ -12,7 +12,7 @@ const settings = { period: "month", includeWatched: true, includeCompleted: true
 const entries = Array.from({ length: 15 }, (_, i) => ({
   score: i < 5 ? String(95 - i * 5) : 0, status: i < 5 ? "COMPLETED" : "PLANNING", progress: i < 5 ? 24 : 0,
   completedAt: i < 5 ? { year: 2026, month: 9, day: 10 } : null,
-  media: { id: i + 1, title: { userPreferred: ["Anime", "September", "Genre", "Score"][i % 4] }, episodes: 24, genres: ["Action"], meanScore: 84, coverImage: { large: art }, bannerImage: art }
+  media: { id: i + 1, type: "ANIME", title: { userPreferred: ["Anime", "September", "Genre", "Score"][i % 4] }, episodes: 24, genres: ["Action"], meanScore: 84, coverImage: { large: art }, bannerImage: art }
 }));
 const domain = createDomain();
 const session = domain.buildSession(domain.normalizeCollection({ MediaListCollection: { lists: [{ entries }] } }, {}), {}, [], settings, now);

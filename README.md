@@ -6,7 +6,7 @@ Seanime Wrapped is a desktop-first, cinematic personal anime recap for [Seanime]
 
 - Instant native Seanime tray; opening it does not read AniList or prepare media
 - This month, previous month, last 3/6 months, year to date, previous full year, and all-time periods
-- Watched and completed counts, genre breakdown, Top 5, highest user-rated anime, studio affinity, average user score, defensible weekday activity, recommendations, and final summary
+- Watched and completed counts, genre breakdown, Top 5, a dedicated #1 spotlight, studio affinity, average user score, defensible weekday activity, recommendations, and final summary
 - Top 5 reveals in the order **#5 → #4 → #3 → #2 → #1**, followed by an overview
 - Up to 10 recommendation cards in a 5 × 2 desktop layout
 - Slide-scoped artwork loading with a small look-ahead buffer, segmented progress, click/keyboard navigation, pause/resume, reduced-motion support, and deterministic cleanup
@@ -92,7 +92,7 @@ Top 5 ranking is deterministic and intentionally avoids invented period episode 
 2. Engagement contributes 40%: 85% completion ratio plus a 15% logarithmic absolute-progress bonus, both capped at 1. Unknown episode totals use the bounded logarithmic measure.
 3. Latest supported watch/start/completion timestamp and media ID break ties deterministically.
 
-Top 5 slides show personal ratings alongside progress. Recommendation cards use AniList community ratings instead. Recommendations derive from the current Top 5's recommendation/relationship links, genres, and available studio metadata, with stronger weight for #1/#2. Planning membership is a bonus. Only the final ten candidates missing community scores are enriched, together in one native public GraphQL request. Successful scores and confirmed null values are cached for seven days; request failures are retried on the next session.
+Top 5 slides show personal ratings alongside progress, and the “Your Highest Rated Anime” spotlight intentionally reuses the exact #1 Top 5 record. Recommendation cards use AniList community ratings instead. Recommendations derive from the current Top 5's recommendation/relationship links, genres, and available studio metadata. Each Top 5 seed receives up to two unique ANIME-only slots, with planning titles as a fallback. Only the final ten candidates missing community scores are enriched, together in one native public GraphQL request. Successful scores and confirmed null values are cached for seven days; request failures are retried on the next session.
 
 ### Runtime score diagnostics
 

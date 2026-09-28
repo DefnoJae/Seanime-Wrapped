@@ -1,4 +1,4 @@
-// Seanime Wrapped v1.0.5 — generated bundle
+// Seanime Wrapped v1.0.6 — generated bundle
 function createDomain() {
     const fallbackArt = "https://raw.githubusercontent.com/DefnoJae/Seanime-Wrapped/main/assets/fallback.svg";
     const MONTHS = [
@@ -65,9 +65,18 @@ function createDomain() {
     function titleOf(media) {
         return media?.title?.userPreferred || media?.title?.english || media?.title?.romaji || media?.title?.native || `Anime #${media?.id || "?"}`;
     }
+    function mediaTypeOf(media) {
+        let value = media?.type ?? (typeof media?.getType === "function" ? media.getType() : null);
+        if (value !== null && typeof value === "object" && typeof value.valueOf === "function")
+            value = value.valueOf();
+        if (typeof value !== "string" || !value.trim())
+            return null;
+        return value.trim().toUpperCase();
+    }
     function mediaFromBase(media, entry, history) {
         return {
             mediaId: Number(media?.id || history?.mediaId || 0),
+            mediaType: mediaTypeOf(media),
             title: titleOf(media),
             cover: media?.coverImage?.extraLarge || media?.coverImage?.large || media?.coverImage?.medium || fallbackArt,
             banner: media?.bannerImage || media?.coverImage?.extraLarge || media?.coverImage?.large || fallbackArt,
@@ -104,7 +113,12 @@ function createDomain() {
                 else {
                     const newer = (normalized.updatedAt || 0) > (existing.updatedAt || 0) ? normalized : existing;
                     const older = newer === normalized ? existing : normalized;
-                    byId[id] = { ...newer, userScore: newer.userScore ?? older.userScore, globalScore: newer.globalScore ?? older.globalScore };
+                    byId[id] = {
+                        ...newer,
+                        mediaType: newer.mediaType ?? older.mediaType,
+                        userScore: newer.userScore ?? older.userScore,
+                        globalScore: newer.globalScore ?? older.globalScore
+                    };
                 }
             }
         }
@@ -224,7 +238,12 @@ function createDomain() {
             if (!media.mediaId)
                 continue;
             const prior = unique[media.mediaId];
-            unique[media.mediaId] = prior ? { ...prior, globalScore: prior.globalScore ?? media.globalScore, genres: Array.from(new Set([...prior.genres, ...media.genres])) } : media;
+            unique[media.mediaId] = prior ? {
+                ...prior,
+                mediaType: prior.mediaType ?? media.mediaType,
+                globalScore: prior.globalScore ?? media.globalScore,
+                genres: Array.from(new Set([...prior.genres, ...media.genres]))
+            } : media;
         }
         return Object.keys(unique).map((id) => unique[Number(id)]);
     }
@@ -232,37 +251,38 @@ function createDomain() {
         const excluded = new Set(all.filter((media) => media.status === "COMPLETED" || media.status === "CURRENT" || media.status === "DROPPED").map((media) => media.mediaId));
         const planning = new Set(all.filter((media) => media.status === "PLANNING").map((media) => media.mediaId));
         topFive.forEach((media) => excluded.add(media.mediaId));
-        return recommendationPool(all, topFive, details, discovery).filter((media) => !excluded.has(media.mediaId)).map((media) => {
-            let score = (media.globalScore || 0) / 10 + (planning.has(media.mediaId) ? 12 : 0);
-            let directRank = 0, studioRank = 0, matches = 0;
-            for (const seed of topFive) {
-                const weight = seed.rank === 1 ? 1.6 : seed.rank === 2 ? 1.3 : 1;
-                const detail = details[seed.mediaId];
-                const direct = detail?.recommendations.some((item) => item.mediaId === media.mediaId);
-                const relation = detail?.relations.some((item) => item.mediaId === media.mediaId);
+        const candidates = recommendationPool(all, topFive, details, discovery)
+            .filter((media) => media.mediaType === "ANIME" && !excluded.has(media.mediaId));
+        const used = new Set();
+        const selected = [];
+        for (const seed of topFive) {
+            const detail = details[seed.mediaId];
+            const rankedForSeed = candidates.map((media) => {
+                const direct = Boolean(detail?.recommendations.some((item) => item.mediaId === media.mediaId));
+                const relation = Boolean(detail?.relations.some((item) => item.mediaId === media.mediaId));
                 const overlap = media.genres.filter((genre) => seed.genres.includes(genre)).length;
-                const sameStudio = detail?.studioNames.some((name) => details[media.mediaId]?.studioNames.includes(name));
-                if (direct || relation || overlap || sameStudio)
-                    matches++;
-                if (direct || relation) {
-                    score += (direct ? 45 : 30) * weight;
-                    if (!directRank)
-                        directRank = seed.rank;
-                }
-                score += Math.min(overlap, 3) * 5 * weight;
-                if (sameStudio) {
-                    score += 12 * weight;
-                    if (!studioRank)
-                        studioRank = seed.rank;
-                }
+                const sameStudio = Boolean(detail?.studioNames.some((name) => details[media.mediaId]?.studioNames.includes(name)));
+                const affinityScore = (direct ? 1000 : 0) + (relation ? 700 : 0) + Math.min(overlap, 3) * 25
+                    + (sameStudio ? 40 : 0) + (planning.has(media.mediaId) ? 20 : 0) + (media.globalScore || 0) / 10;
+                return { media, affinityScore };
+            }).sort((a, b) => b.affinityScore - a.affinityScore || (b.media.globalScore || 0) - (a.media.globalScore || 0) || a.media.mediaId - b.media.mediaId);
+            let count = 0;
+            for (const candidate of rankedForSeed) {
+                if (count >= 2)
+                    break;
+                if (used.has(candidate.media.mediaId))
+                    continue;
+                used.add(candidate.media.mediaId);
+                selected.push({
+                    ...candidate.media,
+                    reason: `From your #${seed.rank}`,
+                    affinityScore: candidate.affinityScore,
+                    sourceRank: seed.rank
+                });
+                count++;
             }
-            const reason = directRank ? `Recommended from your #${directRank}`
-                : studioRank ? `Same studio as your #${studioRank}`
-                    : matches > 1 ? `Matches ${matches} of your Top 5`
-                        : matches ? "Top-5 genre match"
-                            : planning.has(media.mediaId) ? "Already in your planning list" : "AniList community pick";
-            return { ...media, reason, affinityScore: score };
-        }).sort((a, b) => b.affinityScore - a.affinityScore || (b.globalScore || 0) - (a.globalScore || 0) || a.mediaId - b.mediaId).slice(0, 10);
+        }
+        return selected;
     }
     function buildSession(all, details, discovery, settings, nowValue) {
         const period = periodFor(settings.period, nowValue);
@@ -277,7 +297,7 @@ function createDomain() {
         const relevant = Object.keys(relevantById).map((id) => relevantById[Number(id)]);
         const scored = settings.includeRatings ? relevant.filter((media) => media.userScore !== null && media.userScore > 0) : [];
         const averageScore = scored.length ? Math.round((scored.reduce((sum, media) => sum + media.userScore, 0) / scored.length) * 10) / 10 : null;
-        const highestRated = scored.slice().sort((a, b) => b.userScore - a.userScore || engagement(b, period) - engagement(a, period) || a.mediaId - b.mediaId)[0] || null;
+        const highestRated = ranked[0] || null;
         const recs = settings.recommendations ? recommend(all, ranked, details, discovery) : [];
         const day = activeDay(watched, period);
         const summary = [
@@ -326,6 +346,7 @@ function createViewer() {
         const payload = safeJson({
             ...input,
             completedDuration: completedSlideDuration(input.session.completed.length),
+            periodHeadline: input.session.period.label.replace(/\s+\d{4}$/, "").replace(/^Your\s+/, ""),
             scoreLabels: {
                 highestRated: input.session.highestRated?.userScore === null || input.session.highestRated?.userScore === undefined
                     ? null
@@ -368,13 +389,13 @@ function createViewer() {
 const posters=(items)=>items.slice(0,5).map((m,i)=>'<img class="poster" style="--r:'+(-18+i*9)+'deg;--x:'+(-115+i*58)+'px;--d:'+(i*.08)+'s" data-src="'+img(m.cover)+'" alt="'+esc(m.title)+' poster">').join('');
 const shufflePosters=(items)=>items.slice(0,6).map(m=>'<img class="shuffle-poster" data-src="'+img(m.cover)+'" alt="'+esc(m.title)+' poster">').join('');
 const slides=[];const add=(kind,artCandidates,html,duration=6800)=>{const candidates=(Array.isArray(artCandidates)?artCandidates:[artCandidates]).filter(Boolean);slides.push({kind,arts:candidates.length?[...new Set(candidates)].slice(0,5):S.heroArt.slice(0,5),html,duration})};
-const periodHeadline=S.period.label.replace(/\\s+\\d{4}$/,'');
+const periodHeadline=INPUT.periodHeadline;
 add('intro',arts(S.watched).length?arts(S.watched):S.heroArt,'<div class="slide-inner"><div class="reveal"><div class="eyebrow">Seanime Wrapped</div><h1 class="display">Your '+esc(periodHeadline)+'<br><span class="gradient">in Anime</span></h1><div class="eyebrow">'+esc(S.period.label)+'</div><p class="subtitle">Let’s see what you’ve been watching '+esc(S.period.context)+'.</p></div></div>');
 if(S.enabled.watched)add('watched',arts(S.watched),'<div class="slide-inner count-layout"><div class="count-copy reveal"><div class="eyebrow">You watched</div><div class="mega gradient" data-count="'+S.watched.length+'">0</div><h2>'+S.watched.length+' anime '+esc(S.period.context)+'</h2><p class="subtitle">Every title here is grounded in dated Seanime or AniList activity.</p></div><div class="posters">'+posters(S.watched)+'</div></div>');
 if(S.genres.length){const g=S.genres[0],genreAnime=S.watched.filter(m=>m.genres.includes(g.name));add('genres',arts(genreAnime),'<div class="slide-inner genre-layout"><div class="reveal"><div class="eyebrow">Your most watched genre was</div><div class="genre-name gradient">'+esc(g.name.toUpperCase())+'</div><div class="donut" style="--p:'+g.percentage+'" data-label="'+g.percentage+'%"></div></div><div class="bars">'+S.genres.map(x=>'<div class="bar-row"><b>'+esc(x.name)+'</b><div class="bar-track"><div class="bar-fill" style="--w:'+x.percentage+'%"></div></div><span>'+x.percentage+'%</span></div>').join('')+'</div></div>');}
 S.topFive.slice().reverse().forEach((m)=>add('rank '+(m.rank===1?'winner':''),[artOf(m)],'<div class="slide-inner rank-layout"><img class="rank-poster" style="--accent:'+esc(m.color)+'" data-src="'+img(m.cover)+'" alt="'+esc(m.title)+' poster"><div class="reveal" style="--accent:'+esc(m.color)+'"><div class="eyebrow">Your Top 5 Anime</div><div class="rank-number">#'+m.rank+'</div><h2 class="rank-title">'+esc(m.title)+'</h2><p class="subtitle">'+esc(m.metric)+'</p></div></div>',m.rank===1?8200:5600));
 if(S.topFive.length)add('overview',arts(S.topFive),'<div class="slide-inner overview"><div style="width:100%"><div class="reveal"><div class="eyebrow">The full ranking</div><h2 style="font-size:clamp(40px,5vw,74px);margin:8px 0 28px">Your Top '+S.topFive.length+'</h2></div><div class="overview-grid">'+S.topFive.map((m,i)=>'<article class="overview-card '+(m.rank===1?'winner-card':'')+'" style="--d:'+(i*.1)+'s"><span class="card-rank">#'+m.rank+'</span><img data-src="'+img(m.cover)+'" alt=""><div class="card-copy"><div class="card-title">'+esc(m.title)+'</div><div class="meta rank-metric">'+esc(m.metric)+'</div></div></article>').join('')+'</div></div></div>',7800);
-if(S.enabled.ratings&&S.highestRated)add('rated',[artOf(S.highestRated)],'<div class="slide-inner spotlight"><div class="spotlight-copy reveal"><div class="eyebrow">Your highest rated anime</div><h2 class="spotlight-title">'+esc(S.highestRated.title)+'</h2><div class="score gradient">'+INPUT.scoreLabels.highestRated+'<small> / 10</small></div><p class="subtitle">'+esc((S.highestRated.genres||[]).slice(0,3).join(' · '))+(S.highestRatedStudio?' · '+esc(S.highestRatedStudio):'')+' · '+esc(S.highestRated.progress)+' episodes progress</p></div><div class="hero-card"><img data-src="'+img(S.highestRated.cover)+'" alt="'+esc(S.highestRated.title)+' poster"><div class="hero-details"><b>Your score</b><div>'+INPUT.scoreLabels.highestRated+'/10</div></div></div></div>');
+if(S.enabled.ratings&&S.highestRated)add('rated',[artOf(S.highestRated)],'<div class="slide-inner spotlight"><div class="spotlight-copy reveal"><div class="eyebrow">Your highest rated anime</div><h2 class="spotlight-title">'+esc(S.highestRated.title)+'</h2><div class="score gradient">'+(INPUT.scoreLabels.highestRated===null?'—':INPUT.scoreLabels.highestRated)+'<small> / 10</small></div><p class="subtitle">'+esc((S.highestRated.genres||[]).slice(0,3).join(' · '))+(S.highestRatedStudio?' · '+esc(S.highestRatedStudio):'')+' · '+esc(S.highestRated.progress)+' episodes progress</p></div><div class="hero-card"><img data-src="'+img(S.highestRated.cover)+'" alt="'+esc(S.highestRated.title)+' poster"><div class="hero-details"><b>Your score</b><div>'+(INPUT.scoreLabels.highestRated===null?'—':INPUT.scoreLabels.highestRated)+'/10</div></div></div></div>');
 if(S.topStudio)add('studio',arts(S.topStudio.anime),'<div class="slide-inner"><div class="studio-wall">'+S.topStudio.anime.slice(0,8).map(m=>'<img data-src="'+img(m.cover)+'" alt="">').join('')+'</div><div class="reveal" style="position:relative;z-index:3"><div class="eyebrow">You spent the most progress with</div><div class="studio-name gradient">'+esc(S.topStudio.name)+'</div><p class="subtitle">Based on studio metadata available for your most engaged titles.</p><div class="compact-posters">'+S.topStudio.anime.slice(0,6).map(m=>'<img data-src="'+img(m.cover)+'" alt="'+esc(m.title)+'">').join('')+'</div></div></div>');
 if(S.enabled.completed)add('completed',arts(S.completed),'<div class="slide-inner count-layout"><div class="count-copy reveal"><div class="eyebrow">You completed</div><div class="mega gradient" data-count="'+S.completed.length+'">0</div><h2>'+S.completed.length+' anime '+esc(S.period.context)+'</h2></div><div class="shuffle-deck">'+shufflePosters(S.completed)+'</div></div>',INPUT.completedDuration);
 if(S.enabled.ratings)add('average',S.highestRated?[artOf(S.highestRated)]:S.heroArt,'<div class="slide-inner final"><div class="reveal"><div class="eyebrow">Your average score</div><div class="display gradient">'+(INPUT.scoreLabels.average===null?'—':INPUT.scoreLabels.average)+'</div><p class="subtitle" style="margin:auto">'+(S.averageScore===null?'No anime in this period had a user score. That’s okay—your recap stays honest.':'Calculated only from scores you gave, never AniList community scores.')+'</p></div></div>');
@@ -415,7 +436,9 @@ function init() {
         const domain = $shared.use("seanime-wrapped/domain/v1");
         const viewerBuilder = $shared.use("seanime-wrapped/viewer/v1");
         const SETTINGS_KEY = "settings-v1";
-        const DETAIL_CACHE_KEY = "metadata-cache-v1";
+        // v2 retains AniList media type so recommendation candidates can be
+        // rejected unless they are explicitly ANIME.
+        const DETAIL_CACHE_KEY = "metadata-cache-v2";
         const RATING_CACHE_KEY = "community-ratings-v1";
         // Set true for one local validation build. Reports counts/shapes only.
         const DEBUG_SCORES = false;

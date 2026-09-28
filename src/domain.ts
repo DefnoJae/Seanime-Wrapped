@@ -11,6 +11,7 @@ export interface WrappedSettings {
 
 export interface MediaRecord {
   mediaId: number;
+  mediaType: string | null;
   title: string;
   cover: string;
   banner: string;
@@ -44,6 +45,7 @@ export interface RankedMedia extends MediaRecord {
 export interface Recommendation extends MediaRecord {
   reason: string;
   affinityScore: number;
+  sourceRank: number;
 }
 
 export interface GenreStat {
@@ -144,9 +146,17 @@ export function createDomain() {
     return media?.title?.userPreferred || media?.title?.english || media?.title?.romaji || media?.title?.native || `Anime #${media?.id || "?"}`;
   }
 
+  function mediaTypeOf(media: any): string | null {
+    let value = media?.type ?? (typeof media?.getType === "function" ? media.getType() : null);
+    if (value !== null && typeof value === "object" && typeof value.valueOf === "function") value = value.valueOf();
+    if (typeof value !== "string" || !value.trim()) return null;
+    return value.trim().toUpperCase();
+  }
+
   function mediaFromBase(media: any, entry?: any, history?: any): MediaRecord {
     return {
       mediaId: Number(media?.id || history?.mediaId || 0),
+      mediaType: mediaTypeOf(media),
       title: titleOf(media),
       cover: media?.coverImage?.extraLarge || media?.coverImage?.large || media?.coverImage?.medium || fallbackArt,
       banner: media?.bannerImage || media?.coverImage?.extraLarge || media?.coverImage?.large || fallbackArt,
@@ -182,7 +192,12 @@ export function createDomain() {
         else {
           const newer = (normalized.updatedAt || 0) > (existing.updatedAt || 0) ? normalized : existing;
           const older = newer === normalized ? existing : normalized;
-          byId[id] = { ...newer, userScore: newer.userScore ?? older.userScore, globalScore: newer.globalScore ?? older.globalScore };
+          byId[id] = {
+            ...newer,
+            mediaType: newer.mediaType ?? older.mediaType,
+            userScore: newer.userScore ?? older.userScore,
+            globalScore: newer.globalScore ?? older.globalScore
+          };
         }
       }
     }
@@ -298,7 +313,12 @@ export function createDomain() {
     for (const media of pool) {
       if (!media.mediaId) continue;
       const prior = unique[media.mediaId];
-      unique[media.mediaId] = prior ? { ...prior, globalScore: prior.globalScore ?? media.globalScore, genres: Array.from(new Set([...prior.genres, ...media.genres])) } : media;
+      unique[media.mediaId] = prior ? {
+        ...prior,
+        mediaType: prior.mediaType ?? media.mediaType,
+        globalScore: prior.globalScore ?? media.globalScore,
+        genres: Array.from(new Set([...prior.genres, ...media.genres]))
+      } : media;
     }
     return Object.keys(unique).map((id) => unique[Number(id)]);
   }
@@ -307,28 +327,36 @@ export function createDomain() {
     const excluded = new Set(all.filter((media) => media.status === "COMPLETED" || media.status === "CURRENT" || media.status === "DROPPED").map((media) => media.mediaId));
     const planning = new Set(all.filter((media) => media.status === "PLANNING").map((media) => media.mediaId));
     topFive.forEach((media) => excluded.add(media.mediaId));
-    return recommendationPool(all, topFive, details, discovery).filter((media) => !excluded.has(media.mediaId)).map((media) => {
-      let score = (media.globalScore || 0) / 10 + (planning.has(media.mediaId) ? 12 : 0);
-      let directRank = 0, studioRank = 0, matches = 0;
-      for (const seed of topFive) {
-        const weight = seed.rank === 1 ? 1.6 : seed.rank === 2 ? 1.3 : 1;
-        const detail = details[seed.mediaId];
-        const direct = detail?.recommendations.some((item) => item.mediaId === media.mediaId);
-        const relation = detail?.relations.some((item) => item.mediaId === media.mediaId);
+    const candidates = recommendationPool(all, topFive, details, discovery)
+      .filter((media) => media.mediaType === "ANIME" && !excluded.has(media.mediaId));
+    const used = new Set<number>();
+    const selected: Recommendation[] = [];
+    for (const seed of topFive) {
+      const detail = details[seed.mediaId];
+      const rankedForSeed = candidates.map((media) => {
+        const direct = Boolean(detail?.recommendations.some((item) => item.mediaId === media.mediaId));
+        const relation = Boolean(detail?.relations.some((item) => item.mediaId === media.mediaId));
         const overlap = media.genres.filter((genre) => seed.genres.includes(genre)).length;
-        const sameStudio = detail?.studioNames.some((name) => details[media.mediaId]?.studioNames.includes(name));
-        if (direct || relation || overlap || sameStudio) matches++;
-        if (direct || relation) { score += (direct ? 45 : 30) * weight; if (!directRank) directRank = seed.rank; }
-        score += Math.min(overlap, 3) * 5 * weight;
-        if (sameStudio) { score += 12 * weight; if (!studioRank) studioRank = seed.rank; }
+        const sameStudio = Boolean(detail?.studioNames.some((name) => details[media.mediaId]?.studioNames.includes(name)));
+        const affinityScore = (direct ? 1000 : 0) + (relation ? 700 : 0) + Math.min(overlap, 3) * 25
+          + (sameStudio ? 40 : 0) + (planning.has(media.mediaId) ? 20 : 0) + (media.globalScore || 0) / 10;
+        return { media, affinityScore };
+      }).sort((a, b) => b.affinityScore - a.affinityScore || (b.media.globalScore || 0) - (a.media.globalScore || 0) || a.media.mediaId - b.media.mediaId);
+      let count = 0;
+      for (const candidate of rankedForSeed) {
+        if (count >= 2) break;
+        if (used.has(candidate.media.mediaId)) continue;
+        used.add(candidate.media.mediaId);
+        selected.push({
+          ...candidate.media,
+          reason: `From your #${seed.rank}`,
+          affinityScore: candidate.affinityScore,
+          sourceRank: seed.rank
+        });
+        count++;
       }
-      const reason = directRank ? `Recommended from your #${directRank}`
-        : studioRank ? `Same studio as your #${studioRank}`
-        : matches > 1 ? `Matches ${matches} of your Top 5`
-        : matches ? "Top-5 genre match"
-        : planning.has(media.mediaId) ? "Already in your planning list" : "AniList community pick";
-      return { ...media, reason, affinityScore: score };
-    }).sort((a, b) => b.affinityScore - a.affinityScore || (b.globalScore || 0) - (a.globalScore || 0) || a.mediaId - b.mediaId).slice(0, 10);
+    }
+    return selected;
   }
 
   function buildSession(all: MediaRecord[], details: Record<number, StudioMetadata>, discovery: MediaRecord[], settings: WrappedSettings, nowValue?: number): WrappedSession {
@@ -343,7 +371,7 @@ export function createDomain() {
     const relevant = Object.keys(relevantById).map((id) => relevantById[Number(id)]);
     const scored = settings.includeRatings ? relevant.filter((media) => media.userScore !== null && media.userScore! > 0) : [];
     const averageScore = scored.length ? Math.round((scored.reduce((sum, media) => sum + media.userScore!, 0) / scored.length) * 10) / 10 : null;
-    const highestRated = scored.slice().sort((a, b) => b.userScore! - a.userScore! || engagement(b, period) - engagement(a, period) || a.mediaId - b.mediaId)[0] || null;
+    const highestRated = ranked[0] || null;
     const recs = settings.recommendations ? recommend(all, ranked, details, discovery) : [];
     const day = activeDay(watched, period);
     const summary = [

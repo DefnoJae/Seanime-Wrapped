@@ -14,7 +14,9 @@ function init() {
     const domain = $shared.use<WrappedDomain>("seanime-wrapped/domain/v1");
     const viewerBuilder = $shared.use<WrappedViewer>("seanime-wrapped/viewer/v1");
     const SETTINGS_KEY = "settings-v1";
-    const DETAIL_CACHE_KEY = "metadata-cache-v1";
+    // v2 retains AniList media type so recommendation candidates can be
+    // rejected unless they are explicitly ANIME.
+    const DETAIL_CACHE_KEY = "metadata-cache-v2";
     const RATING_CACHE_KEY = "community-ratings-v1";
     // Set true for one local validation build. Reports counts/shapes only.
     const DEBUG_SCORES = false;

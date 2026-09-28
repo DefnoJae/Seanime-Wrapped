@@ -10,9 +10,9 @@ test("isolated Seanime UI handler loads and Start reuses cached recommendation r
   const scheduled = [];
   let html = "", batches = [], collectionCalls = 0, renderFn = null, rendered = null;
   const entries = Array.from({ length: 18 }, (_, i) => ({
-    score: i === 0 ? "90" : 0, status: i === 0 ? "COMPLETED" : "PLANNING", progress: i === 0 ? 12 : 0,
-    completedAt: { year: 2026, month: 9, day: 10 },
-    media: { id: i + 1, episodes: 12, title: { userPreferred: `Anime ${i + 1}` }, genres: ["Action"], meanScore: i === 1 ? 84 : null }
+    score: i === 0 ? "90" : 0, status: i < 5 ? "COMPLETED" : "PLANNING", progress: i < 5 ? 12 : 0,
+    completedAt: i < 5 ? { year: 2026, month: 9, day: 10 } : null,
+    media: { id: i + 1, type: "ANIME", episodes: 12, title: { userPreferred: `Anime ${i + 1}` }, genres: ["Action"], meanScore: i === 5 ? 84 : null }
   }));
   cache.set("settings-v1", { period: "all-time" });
   const state = (value) => ({ get: () => value, set: (next) => { value = next; } });
@@ -41,7 +41,7 @@ test("isolated Seanime UI handler loads and Start reuses cached recommendation r
       customQuery: ({ variables }, token) => {
         assert.equal(token, "");
         batches.push([...variables.ids]);
-        return { Page: { media: variables.ids.map((id) => ({ id, meanScore: id === 3 ? null : 84 })) } };
+        return { Page: { media: variables.ids.map((id) => ({ id, meanScore: id === 7 ? null : 84 })) } };
       }
     }
   };
@@ -59,12 +59,12 @@ test("isolated Seanime UI handler loads and Start reuses cached recommendation r
   while (scheduled.length) scheduled.shift()();
   assert.equal(batches.length, 1);
   assert.equal(batches[0].length, 9);
-  assert.ok(!batches[0].includes(2), "already known ratings must not be fetched");
+  assert.ok(!batches[0].includes(6), "already known ratings must not be fetched");
   const session = cache.get("last-session-v1");
   assert.equal(session.averageScore, 9);
   assert.equal(session.recommendations.length, 10);
-  assert.equal(session.recommendations.find((m) => m.mediaId === 3).globalScore, null);
-  assert.ok(session.recommendations.filter((m) => m.mediaId !== 3).every((m) => m.globalScore === 84));
+  assert.equal(session.recommendations.find((m) => m.mediaId === 7).globalScore, null);
+  assert.ok(session.recommendations.filter((m) => m.mediaId !== 7).every((m) => m.globalScore === 84));
   assert.ok(html.includes('"globalScore":84'));
   handlers.get("seanime-wrapped-start")();
   while (scheduled.length) scheduled.shift()();

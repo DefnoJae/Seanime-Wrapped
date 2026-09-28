@@ -51,13 +51,16 @@ test("tray requests Seanime's drawer presentation", () => {
 
 test("marketplace, viewer, and tray keep independent icon assignments", async () => {
   const trayPng = "https://raw.githubusercontent.com/DefnoJae/Seanime-Wrapped/main/assets/icon.png";
-  const marketplaceSvg = "https://raw.githubusercontent.com/DefnoJae/Seanime-Wrapped/main/assets/icon.svg";
-  assert.equal(manifest.icon, marketplaceSvg);
+  const marketplacePng = "https://raw.githubusercontent.com/DefnoJae/Seanime-Wrapped/main/assets/marketplace-icon.png";
+  assert.equal(manifest.icon, marketplacePng);
+  assert.notEqual(manifest.icon, trayPng);
   assert.match(indexSource, new RegExp(`const trayIconUrl = "${trayPng.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`));
   assert.match(indexSource, /newTray\(\{ iconUrl: trayIconUrl/);
   assert.match(indexSource, /tray\.img\(trayIconUrl/);
   assert.ok((await stat(new URL("../assets/icon.png", import.meta.url))).size > 0);
-  assert.ok((await stat(new URL("../assets/icon.svg", import.meta.url))).size > 0);
+  const marketplaceIconUrl = new URL("../assets/marketplace-icon.png", import.meta.url);
+  assert.ok((await stat(marketplaceIconUrl)).size > 0);
+  assert.deepEqual([...((await readFile(marketplaceIconUrl)).subarray(0, 8))], [137, 80, 78, 71, 13, 10, 26, 10]);
   assert.match(viewerSource, /<span class="logo" aria-hidden="true"><i><\/i><i><\/i><i><\/i><i><\/i><\/span>/);
   assert.doesNotMatch(viewerSource, /icon\.png|brand-icon|WRAPPED_ICON_URL/);
   assert.doesNotMatch(indexSource + viewerSource, /WRAPPED_ICON_URL|data:image\/png;base64/i);
