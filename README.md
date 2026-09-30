@@ -75,6 +75,7 @@ Open tray
 Start Wrapped
   ├─ ctx.continuity.getWatchHistory()               local
   ├─ $anilist.getRawAnimeCollection(true)            always bypass stale collection snapshots
+  ├─ $anilist.customQuery(Page.activities)            bounded AniList list-activity evidence when available
   ├─ $anilist.getAnimeDetails(id)                    at most 15 prioritized IDs; long-lived plugin cache
   ├─ $anilist.getAnimeCollectionWithRelations()      only when recommendations need more candidates
   └─ $anilist.customQuery(Page.media)                one batch for final missing community ratings; 7-day cache
@@ -82,7 +83,7 @@ Start Wrapped
             └─ slide navigation                     zero API/fetch calls
 ```
 
-Every generation uses `getRawAnimeCollection(true)`, then compares a deterministic revision of list membership, status, progress, scores, dates, and watch history before replacing the derived session. **Refresh Data** additionally clears the saved session and enrichment caches, then immediately starts a fresh generation. Metadata failures and rate limits are caught per item; current basic collection data still produces a partial Wrapped.
+Every generation uses `getRawAnimeCollection(true)`, then compares a deterministic revision and persisted per-title snapshot of list membership, status, progress, scores, dates, and watch history before replacing the derived session. Bounded periods prioritize Seanime watch history, explicit AniList dates, and AniList list activity; observed status/progress transitions fill missing dates. A tightly limited full-completion `updatedAt` fallback is disabled when the update pattern resembles a bulk import. **Refresh Data** clears the saved session and enrichment caches, then immediately starts a fresh generation while retaining the previous source snapshot needed to recognize transitions. Metadata failures and rate limits are caught per item; current basic collection data still produces a partial Wrapped.
 
 ### Ranking algorithm
 

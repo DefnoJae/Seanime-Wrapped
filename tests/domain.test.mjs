@@ -115,7 +115,7 @@ test("bounded periods require watch, start, or completion evidence and ignore up
   const session = domain.buildSession(all, {}, [], settings, now);
   assert.deepEqual(session.watched.map((item) => item.mediaId), [1, 4, 5]);
   assert.deepEqual(session.completed.map((item) => item.mediaId), [5]);
-  assert.match(session.accuracyNote, /list-update timestamps are never treated as watch evidence/);
+  assert.match(session.accuracyNote, /Generic list updates are accepted only through a mass-import-safe completion fallback/);
 });
 
 test("bulk-imported old anime cannot enter a recent Top 5", () => {
@@ -126,8 +126,12 @@ test("bulk-imported old anime cannot enter a recent Top 5", () => {
     startedAt: new Date(2010, 0, 1).getTime(), completedAt: new Date(2010, 6, 1).getTime()
   }));
   const session = domain.buildSession([recent, ...imported], {}, [], settings, now);
+  const decisions = domain.periodActivity([recent, ...imported], domain.periodFor("month", now));
   assert.deepEqual(session.watched.map((item) => item.mediaId), [1]);
   assert.deepEqual(session.topFive.map((item) => item.mediaId), [1]);
+  assert.ok(decisions.filter((item) => item.mediaId !== 1).every((item) =>
+    !item.watched && !item.completed && item.sources.includes("no-dated-evidence")
+  ));
 });
 
 test("period labels and weekday names are deterministic and contain no locale timestamps", () => {
@@ -170,7 +174,7 @@ test("ratings use only the user's score and completion uses completion dates", (
   const all = [
     media(1, { status: "COMPLETED", progress: 12, historyAt: september, completedAt: september, userScore: 9, globalScore: 40 }),
     media(2, { status: "CURRENT", progress: 3, historyAt: september, userScore: 7, globalScore: 99 }),
-    media(3, { status: "COMPLETED", progress: 12, historyAt: september, completedAt: new Date(2026, 7, 1).getTime(), userScore: null })
+    media(3, { status: "COMPLETED", progress: 12, historyAt: null, completedAt: new Date(2026, 7, 1).getTime(), userScore: null })
   ];
   const session = domain.buildSession(all, {}, [], settings, now);
   assert.equal(session.averageScore, 8);
@@ -178,26 +182,26 @@ test("ratings use only the user's score and completion uses completion dates", (
   assert.deepEqual(session.completed.map((item) => item.mediaId), [1]);
 });
 
-test("fresh source data rebuilds every dependent statistic and recommendation seed", () => {
+test("a current-period completion transition with no completedAt rebuilds every dependent statistic", () => {
+  const september = new Date(2026, 8, 15, 12).getTime();
   const oldLibrary = [
     ...Array.from({ length: 19 }, (_, index) => media(index + 1, {
-      status: "COMPLETED", progress: 12, episodes: 12, userScore: 6,
-      completedAt: new Date(2026, 8, 1, 12).getTime()
+      status: index < 3 ? "COMPLETED" : "CURRENT",
+      progress: index < 3 ? 12 : 6,
+      episodes: 12,
+      userScore: 6,
+      historyAt: september,
+      historyEpisode: index < 3 ? 12 : 6,
+      completedAt: index < 3 ? september : null
     })),
-    media(20, { status: "PLANNING", progress: 0, userScore: null })
+    media(20, { status: "CURRENT", progress: 11, episodes: 12, userScore: null }),
+    ...Array.from({ length: 10 }, (_, index) => media(100 + index, { status: "PLANNING" }))
   ];
-  const details = {};
-  for (const seedId of [1, 2, 3, 4, 5, 20]) {
-    details[seedId] = {
-      studioNames: [],
-      recommendations: [media(1000 + seedId * 10), media(1001 + seedId * 10)],
-      relations: []
-    };
-  }
-  const config = { ...settings, period: "all-time" };
-  const before = domain.buildSession(oldLibrary, details, [], config, now);
+  const config = { ...settings, period: "month" };
+  const initialSnapshot = domain.buildSourceSnapshot(oldLibrary, {}, [], september);
+  const before = domain.buildSession(oldLibrary, {}, [], config, now, { snapshot: initialSnapshot });
   assert.equal(before.watched.length, 19);
-  assert.equal(before.completed.length, 19);
+  assert.equal(before.completed.length, 3);
   assert.equal(before.averageScore, 6);
   assert.deepEqual(before.topFive.map((item) => item.mediaId), [1, 2, 3, 4, 5]);
 
@@ -206,12 +210,17 @@ test("fresh source data rebuilds every dependent statistic and recommendation se
     status: "COMPLETED",
     progress: 12,
     userScore: 8,
-    completedAt: new Date(2026, 8, 27, 12).getTime()
+    completedAt: null,
+    updatedAt: now
   } : item);
-  const after = domain.buildSession(refreshedLibrary, details, [], config, now);
+  const refreshedSnapshot = domain.buildSourceSnapshot(refreshedLibrary, initialSnapshot, [], now);
+  const activityContext = { snapshot: refreshedSnapshot };
+  const after = domain.buildSession(refreshedLibrary, {}, [], config, now, activityContext);
+  const decision = domain.periodActivity(refreshedLibrary, domain.periodFor("month", now), activityContext)
+    .find((item) => item.mediaId === 20);
   assert.notEqual(domain.sourceRevision(oldLibrary), domain.sourceRevision(refreshedLibrary));
   assert.equal(after.watched.length, 20);
-  assert.equal(after.completed.length, 20);
+  assert.equal(after.completed.length, 4);
   assert.equal(after.averageScore, 6.1);
   assert.equal(after.topFive[0].mediaId, 20);
   assert.ok(after.topFive.some((item) => item.mediaId === 20));
@@ -224,23 +233,47 @@ test("fresh source data rebuilds every dependent statistic and recommendation se
   }
   assert.ok(after.recommendations.some((item) => item.sourceMediaId === 20));
   assert.ok(!after.recommendations.some((item) => item.sourceMediaId === 5), "recommendations from the displaced seed must be removed");
+  assert.equal(decision.watched, true);
+  assert.equal(decision.completed, true);
+  assert.ok(decision.sources.includes("observed-status-transition"));
 });
 
-test("editing only a user score changes the source revision, average, and ranking", () => {
-  const config = { ...settings, period: "all-time" };
+test("AniList list activity qualifies a completion whose completedAt is missing", () => {
+  const anime = media(50, { status: "COMPLETED", progress: 1, episodes: 1, userScore: 8, completedAt: null, updatedAt: null });
+  const activity = [{ mediaId: 50, createdAt: now, status: "completed", progress: null }];
+  const snapshot = domain.buildSourceSnapshot([anime], {}, activity, now);
+  const context = { snapshot, listActivities: activity };
+  const session = domain.buildSession([anime], {}, [], settings, now, context);
+  const decision = domain.periodActivity([anime], domain.periodFor("month", now), context)[0];
+  assert.deepEqual(session.watched.map((item) => item.mediaId), [50]);
+  assert.deepEqual(session.completed.map((item) => item.mediaId), [50]);
+  assert.ok(decision.sources.includes("anilist-list-activity"));
+});
+
+test("editing only a score updates ratings and ranking without changing period membership", () => {
+  const config = { ...settings, period: "month" };
   const beforeLibrary = [
-    media(1, { status: "COMPLETED", progress: 12, userScore: 6 }),
-    media(2, { status: "COMPLETED", progress: 12, userScore: 8 })
+    media(1, { status: "COMPLETED", progress: 12, userScore: 6, historyAt: now, historyEpisode: 12 }),
+    media(2, { status: "COMPLETED", progress: 12, userScore: 8, historyAt: now, historyEpisode: 12 })
   ];
   const afterLibrary = beforeLibrary.map((item) => item.mediaId === 1 ? { ...item, userScore: 10 } : item);
-  const before = domain.buildSession(beforeLibrary, {}, [], config, now);
-  const after = domain.buildSession(afterLibrary, {}, [], config, now);
+  const initialSnapshot = domain.buildSourceSnapshot(beforeLibrary, {}, [], now);
+  const scoreSnapshot = domain.buildSourceSnapshot(afterLibrary, initialSnapshot, [], now);
+  const before = domain.buildSession(beforeLibrary, {}, [], config, now, { snapshot: initialSnapshot });
+  const after = domain.buildSession(afterLibrary, {}, [], config, now, { snapshot: scoreSnapshot });
+  const decisions = domain.periodActivity(afterLibrary, domain.periodFor("month", now), { snapshot: scoreSnapshot });
   assert.notEqual(domain.sourceRevision(beforeLibrary), domain.sourceRevision(afterLibrary));
+  assert.equal(before.watched.length, 2);
+  assert.equal(after.watched.length, 2);
+  assert.equal(before.completed.length, 2);
+  assert.equal(after.completed.length, 2);
   assert.equal(before.averageScore, 7);
   assert.equal(after.averageScore, 9);
   assert.equal(before.topFive[0].mediaId, 2);
   assert.equal(after.topFive[0].mediaId, 1);
   assert.equal(after.highestRated.mediaId, 1);
+  assert.ok(decisions.every((item) => item.sources.includes("seanime-history")));
+  assert.ok(decisions.every((item) => !item.sources.includes("observed-progress-transition") && !item.sources.includes("observed-status-transition")));
 });
 
 test("Highest Rated reuses the exact Top 5 number-one record", () => {

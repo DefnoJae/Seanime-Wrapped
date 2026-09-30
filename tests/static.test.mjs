@@ -70,7 +70,9 @@ test("every generation bypasses stale collection data and manual refresh starts 
   assert.match(indexSource, /getRawAnimeCollection\(true\)/);
   assert.doesNotMatch(indexSource, /getRawAnimeCollection\(forceRefresh\)/);
   assert.match(indexSource, /SOURCE_REVISION_KEY = "source-revision-v1"/);
+  assert.match(indexSource, /SOURCE_SNAPSHOT_KEY = "source-snapshot-v1"/);
   assert.match(indexSource, /sourceRevision !== previousRevision/);
+  assert.match(indexSource, /domain\.buildSourceSnapshot\(all, previousSnapshot, listActivities, generationNow\)/);
   assert.match(indexSource, /\$storage\.remove\(SOURCE_REVISION_KEY\)/);
   const refresh = indexSource.match(/const refreshHandler = ctx\.eventHandler\("seanime-wrapped-refresh", \(\) => \{([\s\S]*?)\n    \}\);/)?.[1] || "";
   assert.ok(refresh);
@@ -179,9 +181,14 @@ test("recommendations retain ten portrait-ready cards with visible ratings", () 
   assert.match(viewerSource, /class="rec-rating">★ /);
   assert.match(viewerSource, /m\.globalScore\/10/);
   assert.match(viewerSource, /data-media-id="'\+m\.mediaId\+'/);
-  assert.match(viewerSource, /closed=true;cleanup\(\);window\.webview\?\.send\('open-anime',\{mediaId\}\)/);
+  assert.match(viewerSource, /openingAnime=true;paused=true;updatePause\(\);window\.webview\?\.send\('open-anime',\{mediaId\}\)/);
+  assert.doesNotMatch(viewerSource, /card\.dataset\.mediaId[\s\S]{0,180}closed=true/);
   assert.match(indexSource, /viewer\.channel\.on\("open-anime"/);
   assert.match(indexSource, /ctx\.screen\.navigateTo\("\/entry", \{ id: String\(mediaId\) \}\)/);
+  const navigation = indexSource.slice(indexSource.indexOf('viewer.channel.on("open-anime"'), indexSource.indexOf("viewer.onUnmount"));
+  assert.ok(navigation.indexOf("viewer.hide()") < navigation.indexOf("ctx.setTimeout"));
+  assert.ok(navigation.indexOf("ctx.setTimeout") < navigation.indexOf('ctx.screen.navigateTo("/entry"'));
+  assert.match(navigation, /catch \(cause\)[\s\S]*viewer\.show\(\)/);
 });
 
 test("no social-story features remain", () => {

@@ -9,7 +9,8 @@ test("isolated UI always rebuilds from fresh source data and Refresh invalidates
   const cache = new Map(), factories = new Map(), handlers = new Map(), channelHandlers = new Map();
   const scheduled = [];
   let html = "", batches = [], collectionCalls = 0, renderFn = null, rendered = null;
-  const collectionBypasses = [], navigations = [];
+  const collectionBypasses = [], navigations = [], webviewEvents = [], warnings = [];
+  let failNavigation = false;
   const entries = Array.from({ length: 18 }, (_, i) => ({
     score: i === 0 ? "90" : 0, status: i < 5 ? "COMPLETED" : "PLANNING", progress: i < 5 ? 12 : 0,
     completedAt: i < 5 ? { year: 2026, month: 9, day: 10 } : null,
@@ -28,14 +29,15 @@ test("isolated UI always rebuilds from fresh source data and Refresh invalidates
     state, fieldRef: (value) => ({ current: value, onValueChange() {}, setValue(next) { this.current = next; } }),
     setTimeout: (fn) => { scheduled.push(fn); return () => {}; },
     eventHandler: (id, fn) => { handlers.set(id, fn); return id; }, newTray: () => components,
-    newWebview: () => ({ setContent(fn) { this.content = fn; }, update() { html = this.content(); }, show() {}, hide() {}, onUnmount() {}, channel: { on(event, fn) { channelHandlers.set(event, fn); } } }),
-    screen: { navigateTo: (path, params) => navigations.push({ path, params }) },
-    continuity: { getWatchHistory: () => ({}) }, toast: { warning() {}, info() {}, error(message) { throw new Error(message); } }
+    newWebview: () => ({ setContent(fn) { this.content = fn; }, update() { html = this.content(); }, show() { webviewEvents.push("show"); }, hide() { webviewEvents.push("hide"); }, onUnmount() {}, channel: { on(event, fn) { channelHandlers.set(event, fn); } } }),
+    screen: { navigateTo: (path, params) => { if (failNavigation) throw new Error("navigation failed"); navigations.push({ path, params }); } },
+    continuity: { getWatchHistory: () => ({}) }, toast: { warning(message) { warnings.push(message); }, info() {}, error(message) { throw new Error(message); } }
   };
   const runtimeGlobals = {
     console,
     $shared: { define: (key, fn) => factories.set(key, fn), use: (key) => factories.get(key)() },
     $storage: { get: (key) => cache.get(key), set: (key, value) => cache.set(key, value), remove: (key) => cache.delete(key) },
+    $database: { anilist: { getUsername: () => "" } },
     $anilist: {
       getRawAnimeCollection: (bypassCache) => { collectionCalls++; collectionBypasses.push(bypassCache); return { MediaListCollection: { lists: [{ entries }] } }; },
       getAnimeDetails: () => ({ studios: { nodes: [] } }),
@@ -103,7 +105,17 @@ test("isolated UI always rebuilds from fresh source data and Refresh invalidates
   assert.equal(batches.length, 2, "manual refresh must invalidate recommendation rating enrichment");
 
   channelHandlers.get("open-anime")({ mediaId: 12 });
+  assert.equal(webviewEvents.at(-1), "hide", "the fixed webview must hide before navigation");
+  assert.equal(navigations.length, 0, "navigation must wait for a render cycle after hide");
+  assert.equal(scheduled.length, 1);
+  while (scheduled.length) scheduled.shift()();
   assert.equal(navigations.length, 1);
   assert.equal(navigations[0].path, "/entry");
   assert.equal(navigations[0].params.id, "12");
+
+  failNavigation = true;
+  channelHandlers.get("open-anime")({ mediaId: 13 });
+  while (scheduled.length) scheduled.shift()();
+  assert.equal(webviewEvents.at(-1), "show", "a failed delayed navigation must restore the still-live viewer");
+  assert.match(warnings.at(-1), /Wrapped is still available/);
 });

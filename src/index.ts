@@ -1,4 +1,4 @@
-import { createDomain, type MediaRecord, type StudioMetadata, type WrappedDomain, type WrappedSession, type WrappedSettings } from "./domain";
+import { createDomain, type AniListListActivity, type MediaRecord, type SourceSnapshot, type StudioMetadata, type WrappedDomain, type WrappedSession, type WrappedSettings } from "./domain";
 import { createViewer, type WrappedViewer } from "./viewer";
 
 declare const console: { error(...args: unknown[]): void; warn(...args: unknown[]): void };
@@ -23,6 +23,7 @@ function init() {
     const LAST_SESSION_KEY = "last-session-v1";
     const LAST_GENERATED_KEY = "last-generated-v1";
     const SOURCE_REVISION_KEY = "source-revision-v1";
+    const SOURCE_SNAPSHOT_KEY = "source-snapshot-v1";
     // UI callbacks run in an isolated Goja scope, so tray-only assets must be
     // declared inside this callback rather than captured from module scope.
     const trayIconUrl = "https://raw.githubusercontent.com/DefnoJae/Seanime-Wrapped/main/assets/icon.png";
@@ -49,6 +50,9 @@ function init() {
     let forceRefresh = false;
     let viewerHtml = "";
     let viewerOpen = false;
+    let animeNavigationPending = false;
+    let activityUsername = "";
+    let activityUserId = 0;
     const loading = ctx.state(false);
     const loadingStage = ctx.state("");
     const loadingProgress = ctx.state(0);
@@ -106,10 +110,22 @@ function init() {
     });
     viewer.channel.on("open-anime", (payload: { mediaId?: number } | number) => {
       const mediaId = Number(typeof payload === "number" ? payload : payload?.mediaId || 0);
-      if (!Number.isFinite(mediaId) || mediaId <= 0) return;
+      if (!Number.isFinite(mediaId) || mediaId <= 0 || animeNavigationPending) return;
+      animeNavigationPending = true;
       viewerOpen = false;
       viewer.hide();
-      ctx.screen.navigateTo("/entry", { id: String(mediaId) });
+      ctx.setTimeout(() => {
+        try {
+          ctx.screen.navigateTo("/entry", { id: String(mediaId) });
+        } catch (cause) {
+          console.warn("Seanime Wrapped could not open the anime entry", cause);
+          viewer.show();
+          viewerOpen = true;
+          ctx.toast.warning("The anime page could not be opened. Wrapped is still available.");
+        } finally {
+          animeNavigationPending = false;
+        }
+      }, 100);
     });
     viewer.onUnmount(() => { viewerOpen = false; });
 
@@ -128,6 +144,56 @@ function init() {
         recommendations,
         relations
       };
+    }
+
+    function collectAniListActivity(period: { start: number | null; end: number }): AniListListActivity[] {
+      if (period.start === null) return [];
+      try {
+        const rawUsername = $database.anilist.getUsername();
+        const username = rawUsername ? String(rawUsername) : "";
+        if (!username) return [];
+        if (username !== activityUsername || !activityUserId) {
+          const userResult = $anilist.customQuery<{ User?: { id?: number } }>({
+            query: "query WrappedActivityUser($name: String) { User(name: $name) { id } }",
+            variables: { name: username }
+          }, "");
+          activityUsername = username;
+          activityUserId = Number(userResult?.User?.id || 0);
+        }
+        if (!activityUserId) return [];
+        const activities: AniListListActivity[] = [];
+        for (let page = 1; page <= 4; page++) {
+          const result = $anilist.customQuery<{
+            Page?: {
+              pageInfo?: { hasNextPage?: boolean };
+              activities?: { mediaId?: number; status?: string; progress?: string | null; createdAt?: number }[];
+            };
+          }>({
+            query: "query WrappedListActivity($page: Int, $userId: Int, $start: Int, $end: Int) { Page(page: $page, perPage: 50) { pageInfo { hasNextPage } activities(userId: $userId, type: ANIME_LIST, createdAt_greater: $start, createdAt_lesser: $end, sort: ID_DESC) { ... on ListActivity { mediaId status progress createdAt } } } }",
+            variables: {
+              page,
+              userId: activityUserId,
+              start: Math.max(0, Math.floor(period.start / 1000) - 1),
+              end: Math.ceil(period.end / 1000) + 1
+            }
+          }, "");
+          for (const activity of result?.Page?.activities || []) {
+            const mediaId = Number(activity?.mediaId || 0), createdAt = Number(activity?.createdAt || 0) * 1000;
+            if (!mediaId || !createdAt) continue;
+            activities.push({
+              mediaId,
+              createdAt,
+              status: String(activity?.status || ""),
+              progress: activity?.progress == null ? null : String(activity.progress)
+            });
+          }
+          if (!result?.Page?.pageInfo?.hasNextPage) break;
+        }
+        return activities;
+      } catch (cause) {
+        console.warn("Seanime Wrapped AniList activity unavailable", cause);
+        return [];
+      }
     }
 
     function collectMetadata(preliminary: WrappedSession): Record<number, StudioMetadata> {
@@ -242,6 +308,12 @@ function init() {
         const history = ctx.continuity.getWatchHistory();
         const all = domain.normalizeCollection(collection, history);
         if (!all.length) throw new Error("No anime collection data is available. Connect AniList or add anime to your local account first.");
+        const generationNow = Date.now();
+        const period = domain.periodFor(settings.period, generationNow);
+        const listActivities = collectAniListActivity(period);
+        const previousSnapshot = $storage.get<SourceSnapshot>(SOURCE_SNAPSHOT_KEY) || {};
+        const sourceSnapshot = domain.buildSourceSnapshot(all, previousSnapshot, listActivities, generationNow);
+        const activityContext = { snapshot: sourceSnapshot, listActivities };
         const sourceRevision = domain.sourceRevision(all);
         const previousRevision = $storage.get<string>(SOURCE_REVISION_KEY) || "";
         if (sourceRevision !== previousRevision) {
@@ -255,7 +327,7 @@ function init() {
         updateLoading("Calculating your stats…", 30);
 
         later(() => {
-          const preliminary = domain.buildSession(all, {}, [], settings);
+          const preliminary = domain.buildSession(all, {}, [], settings, generationNow, activityContext);
           updateLoading("Building your Top 5…", 52);
 
           later(() => {
@@ -264,7 +336,7 @@ function init() {
 
             later(() => {
               collectRelationMetadata(metadata, preliminary);
-              const session = domain.buildSession(all, metadata, [], settings);
+              const session = domain.buildSession(all, metadata, [], settings, generationNow, activityContext);
               enrichRecommendationRatings(session);
               if (!session.watched.length && settings.includeWatched) {
                 ctx.toast.warning("No defensible watch activity was found for this period. Wrapped will show the sections that are available.");
@@ -275,6 +347,7 @@ function init() {
                 viewerHtml = viewerBuilder.documentFor({ session, settings });
                 $storage.set(LAST_SESSION_KEY, session);
                 $storage.set(SOURCE_REVISION_KEY, sourceRevision);
+                $storage.set(SOURCE_SNAPSHOT_KEY, sourceSnapshot);
                 $storage.set(LAST_GENERATED_KEY, session.generatedAt);
                 lastGenerated.set(session.generatedAt);
                 forceRefresh = false;

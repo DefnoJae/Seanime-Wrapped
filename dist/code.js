@@ -1,4 +1,4 @@
-// Seanime Wrapped v1.0.7 — generated bundle
+// Seanime Wrapped v1.0.8 — generated bundle
 function createDomain() {
     const fallbackArt = "https://raw.githubusercontent.com/DefnoJae/Seanime-Wrapped/main/assets/fallback.svg";
     const MONTHS = [
@@ -145,6 +145,53 @@ function createDomain() {
             historyEpisode: media.historyEpisode
         })));
     }
+    function listActivityKind(activity) {
+        const status = String(activity.status || "").toLowerCase();
+        const progress = String(activity.progress || "").toLowerCase();
+        const completed = status.includes("completed");
+        const watched = completed || status.includes("watched episode") || status.includes("rewatched episode") || /\d/.test(progress);
+        return { watched, completed };
+    }
+    function buildSourceSnapshot(all, previous = {}, listActivities = [], observedAt) {
+        var _a;
+        const now = observedAt || Date.now();
+        const activitiesById = {};
+        for (const activity of listActivities)
+            (activitiesById[_a = activity.mediaId] || (activitiesById[_a] = [])).push(activity);
+        const snapshot = {};
+        for (const media of all) {
+            const prior = previous[media.mediaId];
+            const updatedTransitionAt = media.updatedAt && (!prior?.updatedAt || media.updatedAt > prior.updatedAt) ? media.updatedAt : now;
+            let observedProgressAt = prior?.observedProgressAt || null;
+            let observedCompletionAt = prior?.observedCompletionAt || null;
+            if (prior && media.progress > prior.progress)
+                observedProgressAt = updatedTransitionAt;
+            if (prior && prior.status !== "COMPLETED" && media.status === "COMPLETED") {
+                observedProgressAt = updatedTransitionAt;
+                observedCompletionAt = updatedTransitionAt;
+            }
+            for (const activity of activitiesById[media.mediaId] || []) {
+                const kind = listActivityKind(activity);
+                if (kind.watched && (!observedProgressAt || activity.createdAt > observedProgressAt))
+                    observedProgressAt = activity.createdAt;
+                if (kind.completed && (!observedCompletionAt || activity.createdAt > observedCompletionAt))
+                    observedCompletionAt = activity.createdAt;
+            }
+            snapshot[media.mediaId] = {
+                status: media.status,
+                progress: media.progress,
+                userScore: media.userScore,
+                updatedAt: media.updatedAt,
+                startedAt: media.startedAt,
+                completedAt: media.completedAt,
+                historyAt: media.historyAt,
+                historyEpisode: media.historyEpisode,
+                observedProgressAt,
+                observedCompletionAt
+            };
+        }
+        return snapshot;
+    }
     function periodFor(key, nowValue) {
         const now = new Date(nowValue || Date.now());
         const end = now.getTime();
@@ -172,23 +219,83 @@ function createDomain() {
             return false;
         return (period.start === null || value >= period.start) && value <= period.end;
     }
-    function selectedMedia(all, period) {
+    function periodActivity(all, period, context = {}) {
+        var _a;
         if (period.start === null)
-            return all.filter((media) => media.progress > 0 || media.status === "COMPLETED" || media.historyAt !== null);
-        const byId = {};
-        for (const media of all) {
-            const belongs = inWindow(media.historyAt, period)
-                || inWindow(media.startedAt, period)
-                || inWindow(media.completedAt, period);
-            if (belongs)
-                byId[media.mediaId] = media;
+            return all.map((media) => ({
+                mediaId: media.mediaId,
+                watched: media.progress > 0 || media.status === "COMPLETED" || media.historyAt !== null,
+                completed: media.status === "COMPLETED",
+                sources: ["all-time-current-state"]
+            }));
+        const activitiesById = {};
+        for (const activity of context.listActivities || []) {
+            if (inWindow(activity.createdAt, period))
+                (activitiesById[_a = activity.mediaId] || (activitiesById[_a] = [])).push(activity);
         }
-        return Object.keys(byId).map((id) => byId[Number(id)]).sort((a, b) => a.mediaId - b.mediaId);
-    }
-    function completedMedia(all, period) {
-        if (period.start === null)
-            return all.filter((media) => media.status === "COMPLETED");
-        return all.filter((media) => media.status === "COMPLETED" && inWindow(media.completedAt, period));
+        const strongEvidence = (media) => {
+            const snapshot = context.snapshot?.[media.mediaId];
+            const activity = (activitiesById[media.mediaId] || []).some((item) => listActivityKind(item).watched);
+            return inWindow(media.historyAt, period) || inWindow(media.startedAt, period) || inWindow(media.completedAt, period)
+                || activity || inWindow(snapshot?.observedProgressAt || null, period) || inWindow(snapshot?.observedCompletionAt || null, period);
+        };
+        const fallbackCandidates = all.filter((media) => {
+            const atEnd = media.episodes === null || media.episodes <= 0 || media.progress >= media.episodes;
+            return !strongEvidence(media) && media.status === "COMPLETED" && media.progress > 0 && atEnd && inWindow(media.updatedAt, period);
+        });
+        // A handful of isolated, fully-completed updates can safely fill gaps in
+        // AniList dates. A mass of such updates is characteristic of list imports.
+        const fallbackAllowed = fallbackCandidates.length > 0
+            && fallbackCandidates.length <= 5
+            && fallbackCandidates.length <= Math.max(1, Math.ceil(all.length * .05));
+        const fallbackIds = new Set(fallbackAllowed ? fallbackCandidates.map((media) => media.mediaId) : []);
+        return all.map((media) => {
+            const snapshot = context.snapshot?.[media.mediaId];
+            const activities = activitiesById[media.mediaId] || [];
+            const sources = [];
+            let watched = false, completed = false;
+            if (inWindow(media.historyAt, period)) {
+                watched = true;
+                sources.push("seanime-history");
+                const atEnd = media.episodes !== null && media.episodes > 0 && Math.max(media.progress, media.historyEpisode || 0) >= media.episodes;
+                if (media.status === "COMPLETED" && atEnd)
+                    completed = true;
+            }
+            if (inWindow(media.startedAt, period)) {
+                watched = true;
+                sources.push("anilist-start-date");
+            }
+            if (inWindow(media.completedAt, period)) {
+                watched = true;
+                completed = media.status === "COMPLETED";
+                sources.push("anilist-completion-date");
+            }
+            if (activities.some((activity) => listActivityKind(activity).watched)) {
+                watched = true;
+                if (activities.some((activity) => listActivityKind(activity).completed) && media.status === "COMPLETED")
+                    completed = true;
+                sources.push("anilist-list-activity");
+            }
+            if (inWindow(snapshot?.observedCompletionAt || null, period)) {
+                watched = true;
+                completed = media.status === "COMPLETED";
+                sources.push("observed-status-transition");
+            }
+            else if (inWindow(snapshot?.observedProgressAt || null, period)) {
+                watched = true;
+                sources.push("observed-progress-transition");
+            }
+            if (fallbackIds.has(media.mediaId)) {
+                watched = true;
+                completed = true;
+                sources.push("controlled-updated-at");
+            }
+            if (!sources.length)
+                sources.push("no-dated-evidence");
+            if (completed)
+                watched = true;
+            return { mediaId: media.mediaId, watched, completed, sources };
+        });
     }
     function engagement(media, period) {
         const progress = Math.max(media.progress, media.historyEpisode || 0);
@@ -306,16 +413,21 @@ function createDomain() {
         }
         return selected;
     }
-    function buildSession(all, details, discovery, settings, nowValue) {
+    function buildSession(all, details, discovery, settings, nowValue, activityContext = {}) {
         const period = periodFor(settings.period, nowValue);
-        const watched = settings.includeWatched ? selectedMedia(all, period) : [];
-        const completed = settings.includeCompleted ? completedMedia(all, period) : [];
+        const evidence = periodActivity(all, period, activityContext);
+        const mediaById = {};
+        for (const media of all)
+            mediaById[media.mediaId] = media;
+        const watched = settings.includeWatched ? evidence.filter((item) => item.watched).map((item) => mediaById[item.mediaId]) : [];
+        const completed = settings.includeCompleted ? evidence.filter((item) => item.completed).map((item) => mediaById[item.mediaId]) : [];
         const ranked = rankMedia(watched, period);
         const genres = genreStats(watched);
         const studio = topStudio(watched, details);
         const relevantById = {};
-        for (const media of [...selectedMedia(all, period), ...completedMedia(all, period)])
-            relevantById[media.mediaId] = media;
+        for (const item of evidence)
+            if (item.watched || item.completed)
+                relevantById[item.mediaId] = mediaById[item.mediaId];
         const relevant = Object.keys(relevantById).map((id) => relevantById[Number(id)]);
         const scored = settings.includeRatings ? relevant.filter((media) => media.userScore !== null && media.userScore > 0) : [];
         const averageScore = scored.length ? Math.round((scored.reduce((sum, media) => sum + media.userScore, 0) / scored.length) * 10) / 10 : null;
@@ -338,7 +450,7 @@ function createDomain() {
             version: 1,
             generatedAt: new Date(nowValue || Date.now()).toISOString(),
             period,
-            accuracyNote: "Bounded-period membership uses dated Seanime watch history plus AniList start and completion dates. AniList list-update timestamps are never treated as watch evidence.",
+            accuracyNote: "Bounded-period membership prioritizes dated Seanime history, AniList start/completion dates and list activity, then observed status/progress transitions. Generic list updates are accepted only through a mass-import-safe completion fallback.",
             watched,
             completed,
             topFive: ranked,
@@ -354,7 +466,7 @@ function createDomain() {
             enabled: { watched: settings.includeWatched, completed: settings.includeCompleted, ratings: settings.includeRatings, recommendations: settings.recommendations }
         };
     }
-    return { fallbackArt, mediaFromBase, extractUserScore, scoreDiagnostics, normalizeCollection, sourceRevision, periodFor, buildSession };
+    return { fallbackArt, mediaFromBase, extractUserScore, scoreDiagnostics, normalizeCollection, sourceRevision, buildSourceSnapshot, periodFor, periodActivity, buildSession };
 }
 function createViewer() {
     function completedSlideDuration(count) {
@@ -424,7 +536,7 @@ if(S.enabled.ratings)add('average',S.highestRated?[artOf(S.highestRated)]:S.hero
 if(S.activeDay)add('day',arts(S.watched),'<div class="slide-inner"><div class="reveal"><div class="eyebrow">Your most active saved-watch weekday</div><h2 class="display gradient">'+esc(S.activeDay.label)+'</h2><p class="subtitle">'+S.activeDay.count+' title'+(S.activeDay.count===1?'':'s')+' had their latest saved watch record on this weekday.</p><p class="meta" style="max-width:620px;margin-top:25px">'+esc(S.activeDay.interpretation)+'</p></div></div>');
 if(S.enabled.recommendations&&S.recommendations.length)add('recommend',arts(S.recommendations),'<div class="slide-inner recommend"><div style="width:100%"><div class="recommend-head"><div><div class="eyebrow">What comes next</div><h2>Most likely next watch</h2></div><span class="meta">Taste-fit shortlist</span></div><div class="rec-grid">'+S.recommendations.map((m,i)=>'<button type="button" class="rec-card" data-media-id="'+m.mediaId+'" aria-label="Open '+esc(m.title)+' in Seanime" style="--i:'+i+'"><span class="rec-rank">'+(i+1)+'</span><img data-src="'+img(m.cover)+'" alt=""><div class="rec-copy"><b>'+esc(m.title)+'</b><span class="rec-rating">★ '+(m.globalScore?(m.globalScore/10).toFixed(1):'—')+' AniList</span><span class="reason">'+esc(m.reason)+'</span></div></button>').join('')+'</div></div></div>',10000);
 add('final',arts(S.topFive),'<div class="slide-inner final"><div class="reveal"><div class="eyebrow">'+esc(S.period.label)+' in a nutshell</div><h1>That was your<br><span class="gradient">Seanime Wrapped</span></h1><div class="summary">'+S.summary.map(x=>'<div>'+esc(x)+'</div>').join('')+'</div><div class="thanks">Thanks for watching.</div></div></div>',12000);
-const FALLBACK="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1200 675'%3E%3Cdefs%3E%3ClinearGradient id='g'%3E%3Cstop stop-color='%234c5cff'/%3E%3Cstop offset='.55' stop-color='%23bd42d8'/%3E%3Cstop offset='1' stop-color='%23101525'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='1200' height='675' fill='%23070a14'/%3E%3Ccircle cx='380' cy='270' r='330' fill='url(%23g)' opacity='.8'/%3E%3C/svg%3E";const PAUSE_ICON='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14M16 5v14"/></svg>',PLAY_ICON='<svg viewBox="0 0 24 24" aria-hidden="true"><path class="filled" d="m8 5 11 7-11 7z"/></svg>';const MAX_PRELOAD_AHEAD=2;const failedArt=new Set(),artLoads=new Map(),handledKeys=new WeakSet();const app=document.getElementById('app'),stage=document.getElementById('stage'),progress=document.getElementById('progress'),loading=document.getElementById('loading'),pause=document.getElementById('pause');let index=0,paused=!INPUT.settings.autoAdvance,elapsed=0,last=0,raf=0,closed=false,bgFlip=false,backgroundIndex=0,shuffleCycle=-1;let effectRafs=[];
+const FALLBACK="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1200 675'%3E%3Cdefs%3E%3ClinearGradient id='g'%3E%3Cstop stop-color='%234c5cff'/%3E%3Cstop offset='.55' stop-color='%23bd42d8'/%3E%3Cstop offset='1' stop-color='%23101525'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='1200' height='675' fill='%23070a14'/%3E%3Ccircle cx='380' cy='270' r='330' fill='url(%23g)' opacity='.8'/%3E%3C/svg%3E";const PAUSE_ICON='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14M16 5v14"/></svg>',PLAY_ICON='<svg viewBox="0 0 24 24" aria-hidden="true"><path class="filled" d="m8 5 11 7-11 7z"/></svg>';const MAX_PRELOAD_AHEAD=2;const failedArt=new Set(),artLoads=new Map(),handledKeys=new WeakSet();const app=document.getElementById('app'),stage=document.getElementById('stage'),progress=document.getElementById('progress'),loading=document.getElementById('loading'),pause=document.getElementById('pause');let index=0,paused=!INPUT.settings.autoAdvance,elapsed=0,last=0,raf=0,closed=false,openingAnime=false,bgFlip=false,backgroundIndex=0,shuffleCycle=-1;let effectRafs=[];
 stage.innerHTML=slides.map((s,i)=>'<article class="slide '+esc(s.kind)+'" data-index="'+i+'">'+s.html+'</article>').join('');progress.innerHTML=slides.map(()=>'<span class="segment"><i></i></span>').join('');
 function requestEffect(fn){const id=requestAnimationFrame(t=>{effectRafs=effectRafs.filter(value=>value!==id);fn(t)});effectRafs.push(id);return id}function clearEffects(){effectRafs.forEach(cancelAnimationFrame);effectRafs=[]}function resolvedArt(url){return !url||failedArt.has(url)?FALLBACK:url}function setBackground(url){const incoming=document.getElementById(bgFlip?'bgA':'bgB'),outgoing=document.getElementById(bgFlip?'bgB':'bgA');const clean=String(resolvedArt(url)).split('"').join('').split(String.fromCharCode(92)).join('');incoming.style.backgroundImage='url("'+clean+'")';incoming.classList.add('active');outgoing.classList.remove('active');bgFlip=!bgFlip}
 function loadArtwork(url){const source=String(url||'');if(!source||failedArt.has(source))return Promise.resolve(FALLBACK);if(artLoads.has(source))return artLoads.get(source);const pending=new Promise(resolve=>{const image=new Image();const finish=(result)=>{clearTimeout(timer);image.onload=null;image.onerror=null;resolve(result)};const timer=setTimeout(()=>{failedArt.add(source);image.src='';finish(FALLBACK)},6000);image.onload=()=>finish(source);image.onerror=()=>{failedArt.add(source);finish(FALLBACK)};image.src=source});artLoads.set(source,pending);return pending}
@@ -441,7 +553,7 @@ function focusViewer(){window.focus();try{app.focus({preventScroll:true})}catch{
 function cleanup(){cancelAnimationFrame(raf);clearEffects();document.removeEventListener('keydown',onKey,true);window.removeEventListener('keydown',onKey);app.removeEventListener('click',focusViewer,true);stage.removeEventListener('click',onStage)}
 function close(){if(closed)return;closed=true;app.classList.add('closing');cleanup();window.webview?.send('close',{})}
 function onKey(e){if(handledKeys.has(e))return;if(e.target.closest?.('.rec-card')&&(e.key==='Enter'||e.code==='Space'||e.key===' '))return;handledKeys.add(e);if(e.key==='ArrowRight'){e.preventDefault();show(index+1)}else if(e.key==='ArrowLeft'){e.preventDefault();show(index-1)}else if(e.key==='Escape'){e.preventDefault();close()}else if(e.code==='Space'||e.key===' '){e.preventDefault();togglePause()}}
-function onStage(e){const card=e.target.closest('.rec-card');if(card){const mediaId=Number(card.dataset.mediaId||0);if(mediaId>0){closed=true;cleanup();window.webview?.send('open-anime',{mediaId})}return}if(e.target.closest('button'))return;show(index+(e.clientX<innerWidth/2?-1:1))}
+function onStage(e){const card=e.target.closest('.rec-card');if(card){const mediaId=Number(card.dataset.mediaId||0);if(mediaId>0&&!openingAnime){openingAnime=true;paused=true;updatePause();window.webview?.send('open-anime',{mediaId});setTimeout(()=>{openingAnime=false},1000)}return}if(e.target.closest('button'))return;show(index+(e.clientX<innerWidth/2?-1:1))}
 document.getElementById('close').addEventListener('click',close);pause.addEventListener('click',togglePause);document.addEventListener('keydown',onKey,true);window.addEventListener('keydown',onKey);app.addEventListener('click',focusViewer,true);stage.addEventListener('click',onStage);window.addEventListener('pagehide',cleanup,{once:true});window.focus();updatePause();
 primeWindow(0).then(()=>{loading.classList.add('hidden');show(0);focusViewer();raf=requestAnimationFrame(tick)});
 })();
@@ -467,6 +579,7 @@ function init() {
         const LAST_SESSION_KEY = "last-session-v1";
         const LAST_GENERATED_KEY = "last-generated-v1";
         const SOURCE_REVISION_KEY = "source-revision-v1";
+        const SOURCE_SNAPSHOT_KEY = "source-snapshot-v1";
         // UI callbacks run in an isolated Goja scope, so tray-only assets must be
         // declared inside this callback rather than captured from module scope.
         const trayIconUrl = "https://raw.githubusercontent.com/DefnoJae/Seanime-Wrapped/main/assets/icon.png";
@@ -491,6 +604,9 @@ function init() {
         let forceRefresh = false;
         let viewerHtml = "";
         let viewerOpen = false;
+        let animeNavigationPending = false;
+        let activityUsername = "";
+        let activityUserId = 0;
         const loading = ctx.state(false);
         const loadingStage = ctx.state("");
         const loadingProgress = ctx.state(0);
@@ -544,11 +660,25 @@ function init() {
         });
         viewer.channel.on("open-anime", (payload) => {
             const mediaId = Number(typeof payload === "number" ? payload : payload?.mediaId || 0);
-            if (!Number.isFinite(mediaId) || mediaId <= 0)
+            if (!Number.isFinite(mediaId) || mediaId <= 0 || animeNavigationPending)
                 return;
+            animeNavigationPending = true;
             viewerOpen = false;
             viewer.hide();
-            ctx.screen.navigateTo("/entry", { id: String(mediaId) });
+            ctx.setTimeout(() => {
+                try {
+                    ctx.screen.navigateTo("/entry", { id: String(mediaId) });
+                }
+                catch (cause) {
+                    console.warn("Seanime Wrapped could not open the anime entry", cause);
+                    viewer.show();
+                    viewerOpen = true;
+                    ctx.toast.warning("The anime page could not be opened. Wrapped is still available.");
+                }
+                finally {
+                    animeNavigationPending = false;
+                }
+            }, 100);
         });
         viewer.onUnmount(() => { viewerOpen = false; });
         function normalizeDetail(mediaId, detail) {
@@ -568,6 +698,56 @@ function init() {
                 recommendations,
                 relations
             };
+        }
+        function collectAniListActivity(period) {
+            if (period.start === null)
+                return [];
+            try {
+                const rawUsername = $database.anilist.getUsername();
+                const username = rawUsername ? String(rawUsername) : "";
+                if (!username)
+                    return [];
+                if (username !== activityUsername || !activityUserId) {
+                    const userResult = $anilist.customQuery({
+                        query: "query WrappedActivityUser($name: String) { User(name: $name) { id } }",
+                        variables: { name: username }
+                    }, "");
+                    activityUsername = username;
+                    activityUserId = Number(userResult?.User?.id || 0);
+                }
+                if (!activityUserId)
+                    return [];
+                const activities = [];
+                for (let page = 1; page <= 4; page++) {
+                    const result = $anilist.customQuery({
+                        query: "query WrappedListActivity($page: Int, $userId: Int, $start: Int, $end: Int) { Page(page: $page, perPage: 50) { pageInfo { hasNextPage } activities(userId: $userId, type: ANIME_LIST, createdAt_greater: $start, createdAt_lesser: $end, sort: ID_DESC) { ... on ListActivity { mediaId status progress createdAt } } } }",
+                        variables: {
+                            page,
+                            userId: activityUserId,
+                            start: Math.max(0, Math.floor(period.start / 1000) - 1),
+                            end: Math.ceil(period.end / 1000) + 1
+                        }
+                    }, "");
+                    for (const activity of result?.Page?.activities || []) {
+                        const mediaId = Number(activity?.mediaId || 0), createdAt = Number(activity?.createdAt || 0) * 1000;
+                        if (!mediaId || !createdAt)
+                            continue;
+                        activities.push({
+                            mediaId,
+                            createdAt,
+                            status: String(activity?.status || ""),
+                            progress: activity?.progress == null ? null : String(activity.progress)
+                        });
+                    }
+                    if (!result?.Page?.pageInfo?.hasNextPage)
+                        break;
+                }
+                return activities;
+            }
+            catch (cause) {
+                console.warn("Seanime Wrapped AniList activity unavailable", cause);
+                return [];
+            }
         }
         function collectMetadata(preliminary) {
             const stored = forceRefresh ? {} : ($storage.get(DETAIL_CACHE_KEY) || {});
@@ -700,6 +880,12 @@ function init() {
                 const all = domain.normalizeCollection(collection, history);
                 if (!all.length)
                     throw new Error("No anime collection data is available. Connect AniList or add anime to your local account first.");
+                const generationNow = Date.now();
+                const period = domain.periodFor(settings.period, generationNow);
+                const listActivities = collectAniListActivity(period);
+                const previousSnapshot = $storage.get(SOURCE_SNAPSHOT_KEY) || {};
+                const sourceSnapshot = domain.buildSourceSnapshot(all, previousSnapshot, listActivities, generationNow);
+                const activityContext = { snapshot: sourceSnapshot, listActivities };
                 const sourceRevision = domain.sourceRevision(all);
                 const previousRevision = $storage.get(SOURCE_REVISION_KEY) || "";
                 if (sourceRevision !== previousRevision) {
@@ -715,14 +901,14 @@ function init() {
                 }
                 updateLoading("Calculating your stats…", 30);
                 later(() => {
-                    const preliminary = domain.buildSession(all, {}, [], settings);
+                    const preliminary = domain.buildSession(all, {}, [], settings, generationNow, activityContext);
                     updateLoading("Building your Top 5…", 52);
                     later(() => {
                         const metadata = collectMetadata(preliminary);
                         updateLoading("Finding what you might watch next…", 74);
                         later(() => {
                             collectRelationMetadata(metadata, preliminary);
-                            const session = domain.buildSession(all, metadata, [], settings);
+                            const session = domain.buildSession(all, metadata, [], settings, generationNow, activityContext);
                             enrichRecommendationRatings(session);
                             if (!session.watched.length && settings.includeWatched) {
                                 ctx.toast.warning("No defensible watch activity was found for this period. Wrapped will show the sections that are available.");
@@ -732,6 +918,7 @@ function init() {
                                 viewerHtml = viewerBuilder.documentFor({ session, settings });
                                 $storage.set(LAST_SESSION_KEY, session);
                                 $storage.set(SOURCE_REVISION_KEY, sourceRevision);
+                                $storage.set(SOURCE_SNAPSHOT_KEY, sourceSnapshot);
                                 $storage.set(LAST_GENERATED_KEY, session.generatedAt);
                                 lastGenerated.set(session.generatedAt);
                                 forceRefresh = false;

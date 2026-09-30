@@ -30,6 +30,51 @@ export interface MediaRecord {
   historyEpisode: number | null;
 }
 
+export interface SourceSnapshotItem {
+  status: string;
+  progress: number;
+  userScore: number | null;
+  updatedAt: number | null;
+  startedAt: number | null;
+  completedAt: number | null;
+  historyAt: number | null;
+  historyEpisode: number | null;
+  observedProgressAt: number | null;
+  observedCompletionAt: number | null;
+}
+
+export type SourceSnapshot = Record<number, SourceSnapshotItem>;
+
+export interface AniListListActivity {
+  mediaId: number;
+  createdAt: number;
+  status: string;
+  progress: string | null;
+}
+
+export type PeriodEvidenceSource =
+  | "all-time-current-state"
+  | "seanime-history"
+  | "anilist-start-date"
+  | "anilist-completion-date"
+  | "anilist-list-activity"
+  | "observed-status-transition"
+  | "observed-progress-transition"
+  | "controlled-updated-at"
+  | "no-dated-evidence";
+
+export interface PeriodActivityDecision {
+  mediaId: number;
+  watched: boolean;
+  completed: boolean;
+  sources: PeriodEvidenceSource[];
+}
+
+export interface PeriodActivityContext {
+  snapshot?: SourceSnapshot;
+  listActivities?: AniListListActivity[];
+}
+
 export interface StudioMetadata {
   studioNames: string[];
   recommendations: MediaRecord[];
@@ -227,6 +272,50 @@ export function createDomain() {
     })));
   }
 
+  function listActivityKind(activity: AniListListActivity): { watched: boolean; completed: boolean } {
+    const status = String(activity.status || "").toLowerCase();
+    const progress = String(activity.progress || "").toLowerCase();
+    const completed = status.includes("completed");
+    const watched = completed || status.includes("watched episode") || status.includes("rewatched episode") || /\d/.test(progress);
+    return { watched, completed };
+  }
+
+  function buildSourceSnapshot(all: MediaRecord[], previous: SourceSnapshot = {}, listActivities: AniListListActivity[] = [], observedAt?: number): SourceSnapshot {
+    const now = observedAt || Date.now();
+    const activitiesById: Record<number, AniListListActivity[]> = {};
+    for (const activity of listActivities) (activitiesById[activity.mediaId] ||= []).push(activity);
+    const snapshot: SourceSnapshot = {};
+    for (const media of all) {
+      const prior = previous[media.mediaId];
+      const updatedTransitionAt = media.updatedAt && (!prior?.updatedAt || media.updatedAt > prior.updatedAt) ? media.updatedAt : now;
+      let observedProgressAt = prior?.observedProgressAt || null;
+      let observedCompletionAt = prior?.observedCompletionAt || null;
+      if (prior && media.progress > prior.progress) observedProgressAt = updatedTransitionAt;
+      if (prior && prior.status !== "COMPLETED" && media.status === "COMPLETED") {
+        observedProgressAt = updatedTransitionAt;
+        observedCompletionAt = updatedTransitionAt;
+      }
+      for (const activity of activitiesById[media.mediaId] || []) {
+        const kind = listActivityKind(activity);
+        if (kind.watched && (!observedProgressAt || activity.createdAt > observedProgressAt)) observedProgressAt = activity.createdAt;
+        if (kind.completed && (!observedCompletionAt || activity.createdAt > observedCompletionAt)) observedCompletionAt = activity.createdAt;
+      }
+      snapshot[media.mediaId] = {
+        status: media.status,
+        progress: media.progress,
+        userScore: media.userScore,
+        updatedAt: media.updatedAt,
+        startedAt: media.startedAt,
+        completedAt: media.completedAt,
+        historyAt: media.historyAt,
+        historyEpisode: media.historyEpisode,
+        observedProgressAt,
+        observedCompletionAt
+      };
+    }
+    return snapshot;
+  }
+
   function periodFor(key: PeriodKey, nowValue?: number) {
     const now = new Date(nowValue || Date.now());
     const end = now.getTime();
@@ -252,21 +341,72 @@ export function createDomain() {
     return (period.start === null || value >= period.start) && value <= period.end;
   }
 
-  function selectedMedia(all: MediaRecord[], period: ReturnType<typeof periodFor>): MediaRecord[] {
-    if (period.start === null) return all.filter((media) => media.progress > 0 || media.status === "COMPLETED" || media.historyAt !== null);
-    const byId: Record<number, MediaRecord> = {};
-    for (const media of all) {
-      const belongs = inWindow(media.historyAt, period)
-        || inWindow(media.startedAt, period)
-        || inWindow(media.completedAt, period);
-      if (belongs) byId[media.mediaId] = media;
+  function periodActivity(all: MediaRecord[], period: ReturnType<typeof periodFor>, context: PeriodActivityContext = {}): PeriodActivityDecision[] {
+    if (period.start === null) return all.map((media) => ({
+      mediaId: media.mediaId,
+      watched: media.progress > 0 || media.status === "COMPLETED" || media.historyAt !== null,
+      completed: media.status === "COMPLETED",
+      sources: ["all-time-current-state"]
+    }));
+    const activitiesById: Record<number, AniListListActivity[]> = {};
+    for (const activity of context.listActivities || []) {
+      if (inWindow(activity.createdAt, period)) (activitiesById[activity.mediaId] ||= []).push(activity);
     }
-    return Object.keys(byId).map((id) => byId[Number(id)]).sort((a, b) => a.mediaId - b.mediaId);
-  }
-
-  function completedMedia(all: MediaRecord[], period: ReturnType<typeof periodFor>): MediaRecord[] {
-    if (period.start === null) return all.filter((media) => media.status === "COMPLETED");
-    return all.filter((media) => media.status === "COMPLETED" && inWindow(media.completedAt, period));
+    const strongEvidence = (media: MediaRecord): boolean => {
+      const snapshot = context.snapshot?.[media.mediaId];
+      const activity = (activitiesById[media.mediaId] || []).some((item) => listActivityKind(item).watched);
+      return inWindow(media.historyAt, period) || inWindow(media.startedAt, period) || inWindow(media.completedAt, period)
+        || activity || inWindow(snapshot?.observedProgressAt || null, period) || inWindow(snapshot?.observedCompletionAt || null, period);
+    };
+    const fallbackCandidates = all.filter((media) => {
+      const atEnd = media.episodes === null || media.episodes <= 0 || media.progress >= media.episodes;
+      return !strongEvidence(media) && media.status === "COMPLETED" && media.progress > 0 && atEnd && inWindow(media.updatedAt, period);
+    });
+    // A handful of isolated, fully-completed updates can safely fill gaps in
+    // AniList dates. A mass of such updates is characteristic of list imports.
+    const fallbackAllowed = fallbackCandidates.length > 0
+      && fallbackCandidates.length <= 5
+      && fallbackCandidates.length <= Math.max(1, Math.ceil(all.length * .05));
+    const fallbackIds = new Set(fallbackAllowed ? fallbackCandidates.map((media) => media.mediaId) : []);
+    return all.map((media) => {
+      const snapshot = context.snapshot?.[media.mediaId];
+      const activities = activitiesById[media.mediaId] || [];
+      const sources: PeriodEvidenceSource[] = [];
+      let watched = false, completed = false;
+      if (inWindow(media.historyAt, period)) {
+        watched = true;
+        sources.push("seanime-history");
+        const atEnd = media.episodes !== null && media.episodes > 0 && Math.max(media.progress, media.historyEpisode || 0) >= media.episodes;
+        if (media.status === "COMPLETED" && atEnd) completed = true;
+      }
+      if (inWindow(media.startedAt, period)) { watched = true; sources.push("anilist-start-date"); }
+      if (inWindow(media.completedAt, period)) {
+        watched = true;
+        completed = media.status === "COMPLETED";
+        sources.push("anilist-completion-date");
+      }
+      if (activities.some((activity) => listActivityKind(activity).watched)) {
+        watched = true;
+        if (activities.some((activity) => listActivityKind(activity).completed) && media.status === "COMPLETED") completed = true;
+        sources.push("anilist-list-activity");
+      }
+      if (inWindow(snapshot?.observedCompletionAt || null, period)) {
+        watched = true;
+        completed = media.status === "COMPLETED";
+        sources.push("observed-status-transition");
+      } else if (inWindow(snapshot?.observedProgressAt || null, period)) {
+        watched = true;
+        sources.push("observed-progress-transition");
+      }
+      if (fallbackIds.has(media.mediaId)) {
+        watched = true;
+        completed = true;
+        sources.push("controlled-updated-at");
+      }
+      if (!sources.length) sources.push("no-dated-evidence");
+      if (completed) watched = true;
+      return { mediaId: media.mediaId, watched, completed, sources };
+    });
   }
 
   function engagement(media: MediaRecord, period: ReturnType<typeof periodFor>): number {
@@ -383,15 +523,18 @@ export function createDomain() {
     return selected;
   }
 
-  function buildSession(all: MediaRecord[], details: Record<number, StudioMetadata>, discovery: MediaRecord[], settings: WrappedSettings, nowValue?: number): WrappedSession {
+  function buildSession(all: MediaRecord[], details: Record<number, StudioMetadata>, discovery: MediaRecord[], settings: WrappedSettings, nowValue?: number, activityContext: PeriodActivityContext = {}): WrappedSession {
     const period = periodFor(settings.period, nowValue);
-    const watched = settings.includeWatched ? selectedMedia(all, period) : [];
-    const completed = settings.includeCompleted ? completedMedia(all, period) : [];
+    const evidence = periodActivity(all, period, activityContext);
+    const mediaById: Record<number, MediaRecord> = {};
+    for (const media of all) mediaById[media.mediaId] = media;
+    const watched = settings.includeWatched ? evidence.filter((item) => item.watched).map((item) => mediaById[item.mediaId]) : [];
+    const completed = settings.includeCompleted ? evidence.filter((item) => item.completed).map((item) => mediaById[item.mediaId]) : [];
     const ranked = rankMedia(watched, period);
     const genres = genreStats(watched);
     const studio = topStudio(watched, details);
     const relevantById: Record<number, MediaRecord> = {};
-    for (const media of [...selectedMedia(all, period), ...completedMedia(all, period)]) relevantById[media.mediaId] = media;
+    for (const item of evidence) if (item.watched || item.completed) relevantById[item.mediaId] = mediaById[item.mediaId];
     const relevant = Object.keys(relevantById).map((id) => relevantById[Number(id)]);
     const scored = settings.includeRatings ? relevant.filter((media) => media.userScore !== null && media.userScore! > 0) : [];
     const averageScore = scored.length ? Math.round((scored.reduce((sum, media) => sum + media.userScore!, 0) / scored.length) * 10) / 10 : null;
@@ -413,7 +556,7 @@ export function createDomain() {
       version: 1,
       generatedAt: new Date(nowValue || Date.now()).toISOString(),
       period,
-      accuracyNote: "Bounded-period membership uses dated Seanime watch history plus AniList start and completion dates. AniList list-update timestamps are never treated as watch evidence.",
+      accuracyNote: "Bounded-period membership prioritizes dated Seanime history, AniList start/completion dates and list activity, then observed status/progress transitions. Generic list updates are accepted only through a mass-import-safe completion fallback.",
       watched,
       completed,
       topFive: ranked,
@@ -430,7 +573,7 @@ export function createDomain() {
     };
   }
 
-  return { fallbackArt, mediaFromBase, extractUserScore, scoreDiagnostics, normalizeCollection, sourceRevision, periodFor, buildSession };
+  return { fallbackArt, mediaFromBase, extractUserScore, scoreDiagnostics, normalizeCollection, sourceRevision, buildSourceSnapshot, periodFor, periodActivity, buildSession };
 }
 
 export type WrappedDomain = ReturnType<typeof createDomain>;
