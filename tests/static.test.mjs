@@ -66,6 +66,19 @@ test("marketplace, viewer, and tray keep independent icon assignments", async ()
   assert.doesNotMatch(indexSource + viewerSource, /WRAPPED_ICON_URL|data:image\/png;base64/i);
 });
 
+test("every generation bypasses stale collection data and manual refresh starts immediately", () => {
+  assert.match(indexSource, /getRawAnimeCollection\(true\)/);
+  assert.doesNotMatch(indexSource, /getRawAnimeCollection\(forceRefresh\)/);
+  assert.match(indexSource, /SOURCE_REVISION_KEY = "source-revision-v1"/);
+  assert.match(indexSource, /sourceRevision !== previousRevision/);
+  assert.match(indexSource, /\$storage\.remove\(SOURCE_REVISION_KEY\)/);
+  const refresh = indexSource.match(/const refreshHandler = ctx\.eventHandler\("seanime-wrapped-refresh", \(\) => \{([\s\S]*?)\n    \}\);/)?.[1] || "";
+  assert.ok(refresh);
+  assert.match(refresh, /\$storage\.remove\(LAST_SESSION_KEY\)/);
+  assert.match(refresh, /startWrapped\(\)/);
+  assert.doesNotMatch(indexSource, /Refresh queued|refreshQueued/);
+});
+
 test("generation drawer shows staged progress and disables duplicate starts", () => {
   for (const stage of ["Reading your anime library", "Calculating your stats", "Building your Top 5", "Finding what you might watch next", "Preparing your Wrapped"]) {
     assert.match(indexSource, new RegExp(stage));
@@ -165,6 +178,10 @@ test("recommendations retain ten portrait-ready cards with visible ratings", () 
   assert.match(viewerSource, /grid-template-columns:repeat\(5,minmax\(120px,180px\)\)/);
   assert.match(viewerSource, /class="rec-rating">★ /);
   assert.match(viewerSource, /m\.globalScore\/10/);
+  assert.match(viewerSource, /data-media-id="'\+m\.mediaId\+'/);
+  assert.match(viewerSource, /closed=true;cleanup\(\);window\.webview\?\.send\('open-anime',\{mediaId\}\)/);
+  assert.match(indexSource, /viewer\.channel\.on\("open-anime"/);
+  assert.match(indexSource, /ctx\.screen\.navigateTo\("\/entry", \{ id: String\(mediaId\) \}\)/);
 });
 
 test("no social-story features remain", () => {

@@ -8,7 +8,7 @@ Seanime Wrapped is a desktop-first, cinematic personal anime recap for [Seanime]
 - This month, previous month, last 3/6 months, year to date, previous full year, and all-time periods
 - Watched and completed counts, genre breakdown, Top 5, a dedicated #1 spotlight, studio affinity, average user score, defensible weekday activity, recommendations, and final summary
 - Top 5 reveals in the order **#5 → #4 → #3 → #2 → #1**, followed by an overview
-- Up to 10 recommendation cards in a 5 × 2 desktop layout
+- Up to 10 recommendation cards in a 5 × 2 desktop layout; selecting a card opens that anime inside Seanime
 - Slide-scoped artwork loading with a small look-ahead buffer, segmented progress, click/keyboard navigation, pause/resume, reduced-motion support, and deterministic cleanup
 - Immediate staged generation feedback in the drawer while library, statistics, Top 5, and recommendations are prepared
 - A silent viewer with no media playback or external streaming dependency
@@ -74,7 +74,7 @@ Open tray
 
 Start Wrapped
   ├─ ctx.continuity.getWatchHistory()               local
-  ├─ $anilist.getRawAnimeCollection(false)           Seanime cache first
+  ├─ $anilist.getRawAnimeCollection(true)            always bypass stale collection snapshots
   ├─ $anilist.getAnimeDetails(id)                    at most 15 prioritized IDs; long-lived plugin cache
   ├─ $anilist.getAnimeCollectionWithRelations()      only when recommendations need more candidates
   └─ $anilist.customQuery(Page.media)                one batch for final missing community ratings; 7-day cache
@@ -82,7 +82,7 @@ Start Wrapped
             └─ slide navigation                     zero API/fetch calls
 ```
 
-Manual refresh uses `getRawAnimeCollection(true)` on the next start. Metadata failures and rate limits are caught per item; cached/basic collection data still produces a partial Wrapped.
+Every generation uses `getRawAnimeCollection(true)`, then compares a deterministic revision of list membership, status, progress, scores, dates, and watch history before replacing the derived session. **Refresh Data** additionally clears the saved session and enrichment caches, then immediately starts a fresh generation. Metadata failures and rate limits are caught per item; current basic collection data still produces a partial Wrapped.
 
 ### Ranking algorithm
 

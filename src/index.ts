@@ -22,6 +22,7 @@ function init() {
     const DEBUG_SCORES = false;
     const LAST_SESSION_KEY = "last-session-v1";
     const LAST_GENERATED_KEY = "last-generated-v1";
+    const SOURCE_REVISION_KEY = "source-revision-v1";
     // UI callbacks run in an isolated Goja scope, so tray-only assets must be
     // declared inside this callback rather than captured from module scope.
     const trayIconUrl = "https://raw.githubusercontent.com/DefnoJae/Seanime-Wrapped/main/assets/icon.png";
@@ -52,7 +53,6 @@ function init() {
     const loadingStage = ctx.state("");
     const loadingProgress = ctx.state(0);
     const error = ctx.state("");
-    const refreshQueued = ctx.state(false);
     const lastGenerated = ctx.state($storage.get<string>(LAST_GENERATED_KEY) || "");
 
     const periodRef = ctx.fieldRef(settings.period);
@@ -103,6 +103,13 @@ function init() {
     viewer.channel.on("close", () => {
       viewerOpen = false;
       viewer.hide();
+    });
+    viewer.channel.on("open-anime", (payload: { mediaId?: number } | number) => {
+      const mediaId = Number(typeof payload === "number" ? payload : payload?.mediaId || 0);
+      if (!Number.isFinite(mediaId) || mediaId <= 0) return;
+      viewerOpen = false;
+      viewer.hide();
+      ctx.screen.navigateTo("/entry", { id: String(mediaId) });
     });
     viewer.onUnmount(() => { viewerOpen = false; });
 
@@ -227,11 +234,24 @@ function init() {
       updateLoading("Reading your anime library…", 8);
 
       later(() => {
-        const collection = $anilist.getRawAnimeCollection(forceRefresh);
+        // Wrapped statistics are always rebuilt from a current collection.
+        // Seanime's bypass flag prevents a prior in-memory AniList snapshot
+        // from freezing progress, completion status, or user scores.
+        const collection = $anilist.getRawAnimeCollection(true);
         if (DEBUG_SCORES) console.warn("Wrapped score diagnostics", JSON.stringify(domain.scoreDiagnostics(collection)));
         const history = ctx.continuity.getWatchHistory();
         const all = domain.normalizeCollection(collection, history);
         if (!all.length) throw new Error("No anime collection data is available. Connect AniList or add anime to your local account first.");
+        const sourceRevision = domain.sourceRevision(all);
+        const previousRevision = $storage.get<string>(SOURCE_REVISION_KEY) || "";
+        if (sourceRevision !== previousRevision) {
+          try { $storage.remove(LAST_SESSION_KEY); } catch {}
+          viewerHtml = "";
+          if (viewerOpen) {
+            viewerOpen = false;
+            viewer.hide();
+          }
+        }
         updateLoading("Calculating your stats…", 30);
 
         later(() => {
@@ -254,10 +274,10 @@ function init() {
               later(() => {
                 viewerHtml = viewerBuilder.documentFor({ session, settings });
                 $storage.set(LAST_SESSION_KEY, session);
+                $storage.set(SOURCE_REVISION_KEY, sourceRevision);
                 $storage.set(LAST_GENERATED_KEY, session.generatedAt);
                 lastGenerated.set(session.generatedAt);
                 forceRefresh = false;
-                refreshQueued.set(false);
                 updateLoading("Your Wrapped is ready.", 100);
                 viewer.update();
 
@@ -278,16 +298,22 @@ function init() {
 
     const startHandler = ctx.eventHandler("seanime-wrapped-start", startWrapped);
     const refreshHandler = ctx.eventHandler("seanime-wrapped-refresh", () => {
+      if (loading.get()) return;
       try {
         $storage.remove(DETAIL_CACHE_KEY);
         $storage.remove(RATING_CACHE_KEY);
         $storage.remove(LAST_SESSION_KEY);
+        $storage.remove(SOURCE_REVISION_KEY);
       } catch {}
       forceRefresh = true;
-      refreshQueued.set(true);
+      viewerHtml = "";
+      if (viewerOpen) {
+        viewerOpen = false;
+        viewer.hide();
+      }
       error.set("");
-      ctx.toast.info("Refresh queued. Fresh collection data will be requested when you press Start Wrapped.");
-      tray.update();
+      ctx.toast.info("Refreshing Seanime Wrapped with current anime data.");
+      startWrapped();
     });
 
     const tray = ctx.newTray({ iconUrl: trayIconUrl, withContent: true, isDrawer: true, width: "390px", minHeight: "620px" });
@@ -339,7 +365,6 @@ function init() {
           tray.switch("Auto-advance slides", { fieldRef: autoAdvanceRef })
         ], { className: "sw-section" }),
         error.get() ? tray.text(error.get(), { className: "sw-error" }) : tray.div([]),
-        refreshQueued.get() ? tray.alert({ title: "Refresh queued", description: "Fresh data will be requested only after Start Wrapped is pressed.", intent: "info" }) : tray.div([]),
         loading.get() ? tray.stack([
           tray.text(loadingStage.get(), { className: "sw-loading-text" }),
           tray.div([
@@ -354,7 +379,7 @@ function init() {
           tray.button("Refresh Data", { onClick: refreshHandler, intent: "gray-subtle", disabled: loading.get() })
         ], { className: "sw-actions" }),
         tray.text(lastGenerated.get() ? `Last generated ${formatGeneratedAt(lastGenerated.get())}` : "No Wrapped generated yet", { className: "sw-note" }),
-        tray.text("Opening this tray never loads AniList data. Start Wrapped prepares one offline presentation session.", { className: "sw-note" })
+        tray.text("Opening this tray never loads AniList data. Start Wrapped fetches current list data and prepares one offline presentation session.", { className: "sw-note" })
       ], { className: "sw-shell", gap: 2 });
     });
 

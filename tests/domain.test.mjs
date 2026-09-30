@@ -96,6 +96,7 @@ test("recommendations allocate two unique ANIME titles to every Top 5 seed", () 
     const group = session.recommendations.filter((item) => item.sourceRank === rank);
     assert.equal(group.length, 2, `Top 5 #${rank} should own exactly two slots`);
     assert.ok(group.every((item) => item.reason === `From your #${rank}`));
+    assert.ok(group.every((item) => item.sourceMediaId === session.topFive[rank - 1].mediaId));
   }
   assert.equal(session.recommendations.filter((item) => item.mediaId === 20).length, 1, "shared candidates must be deduplicated");
   assert.ok(!session.recommendations.filter((item) => item.sourceRank === 2).some((item) => item.mediaId === 20), "the later seed must advance past a duplicate");
@@ -175,6 +176,71 @@ test("ratings use only the user's score and completion uses completion dates", (
   assert.equal(session.averageScore, 8);
   assert.equal(session.highestRated?.mediaId, 1);
   assert.deepEqual(session.completed.map((item) => item.mediaId), [1]);
+});
+
+test("fresh source data rebuilds every dependent statistic and recommendation seed", () => {
+  const oldLibrary = [
+    ...Array.from({ length: 19 }, (_, index) => media(index + 1, {
+      status: "COMPLETED", progress: 12, episodes: 12, userScore: 6,
+      completedAt: new Date(2026, 8, 1, 12).getTime()
+    })),
+    media(20, { status: "PLANNING", progress: 0, userScore: null })
+  ];
+  const details = {};
+  for (const seedId of [1, 2, 3, 4, 5, 20]) {
+    details[seedId] = {
+      studioNames: [],
+      recommendations: [media(1000 + seedId * 10), media(1001 + seedId * 10)],
+      relations: []
+    };
+  }
+  const config = { ...settings, period: "all-time" };
+  const before = domain.buildSession(oldLibrary, details, [], config, now);
+  assert.equal(before.watched.length, 19);
+  assert.equal(before.completed.length, 19);
+  assert.equal(before.averageScore, 6);
+  assert.deepEqual(before.topFive.map((item) => item.mediaId), [1, 2, 3, 4, 5]);
+
+  const refreshedLibrary = oldLibrary.map((item) => item.mediaId === 20 ? {
+    ...item,
+    status: "COMPLETED",
+    progress: 12,
+    userScore: 8,
+    completedAt: new Date(2026, 8, 27, 12).getTime()
+  } : item);
+  const after = domain.buildSession(refreshedLibrary, details, [], config, now);
+  assert.notEqual(domain.sourceRevision(oldLibrary), domain.sourceRevision(refreshedLibrary));
+  assert.equal(after.watched.length, 20);
+  assert.equal(after.completed.length, 20);
+  assert.equal(after.averageScore, 6.1);
+  assert.equal(after.topFive[0].mediaId, 20);
+  assert.ok(after.topFive.some((item) => item.mediaId === 20));
+  assert.ok(!after.topFive.some((item) => item.mediaId === 5));
+  assert.equal(after.highestRated, after.topFive[0]);
+  assert.equal(after.highestRated.mediaId, after.topFive[0].mediaId);
+  assert.equal(after.recommendations.length, 10);
+  for (const recommendation of after.recommendations) {
+    assert.equal(recommendation.sourceMediaId, after.topFive[recommendation.sourceRank - 1].mediaId);
+  }
+  assert.ok(after.recommendations.some((item) => item.sourceMediaId === 20));
+  assert.ok(!after.recommendations.some((item) => item.sourceMediaId === 5), "recommendations from the displaced seed must be removed");
+});
+
+test("editing only a user score changes the source revision, average, and ranking", () => {
+  const config = { ...settings, period: "all-time" };
+  const beforeLibrary = [
+    media(1, { status: "COMPLETED", progress: 12, userScore: 6 }),
+    media(2, { status: "COMPLETED", progress: 12, userScore: 8 })
+  ];
+  const afterLibrary = beforeLibrary.map((item) => item.mediaId === 1 ? { ...item, userScore: 10 } : item);
+  const before = domain.buildSession(beforeLibrary, {}, [], config, now);
+  const after = domain.buildSession(afterLibrary, {}, [], config, now);
+  assert.notEqual(domain.sourceRevision(beforeLibrary), domain.sourceRevision(afterLibrary));
+  assert.equal(before.averageScore, 7);
+  assert.equal(after.averageScore, 9);
+  assert.equal(before.topFive[0].mediaId, 2);
+  assert.equal(after.topFive[0].mediaId, 1);
+  assert.equal(after.highestRated.mediaId, 1);
 });
 
 test("Highest Rated reuses the exact Top 5 number-one record", () => {

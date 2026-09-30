@@ -46,6 +46,7 @@ export interface Recommendation extends MediaRecord {
   reason: string;
   affinityScore: number;
   sourceRank: number;
+  sourceMediaId: number;
 }
 
 export interface GenreStat {
@@ -204,6 +205,28 @@ export function createDomain() {
     return Object.keys(byId).map((id) => byId[Number(id)]).sort((a, b) => a.mediaId - b.mediaId);
   }
 
+  function sourceRevision(all: MediaRecord[]): string {
+    return JSON.stringify(all.slice().sort((a, b) => a.mediaId - b.mediaId).map((media) => ({
+      mediaId: media.mediaId,
+      mediaType: media.mediaType,
+      title: media.title,
+      cover: media.cover,
+      banner: media.banner,
+      genres: media.genres.slice().sort(),
+      globalScore: media.globalScore,
+      userScore: media.userScore,
+      status: media.status,
+      progress: media.progress,
+      episodes: media.episodes,
+      duration: media.duration,
+      updatedAt: media.updatedAt,
+      startedAt: media.startedAt,
+      completedAt: media.completedAt,
+      historyAt: media.historyAt,
+      historyEpisode: media.historyEpisode
+    })));
+  }
+
   function periodFor(key: PeriodKey, nowValue?: number) {
     const now = new Date(nowValue || Date.now());
     const end = now.getTime();
@@ -351,7 +374,8 @@ export function createDomain() {
           ...candidate.media,
           reason: `From your #${seed.rank}`,
           affinityScore: candidate.affinityScore,
-          sourceRank: seed.rank
+          sourceRank: seed.rank,
+          sourceMediaId: seed.mediaId
         });
         count++;
       }
@@ -406,7 +430,7 @@ export function createDomain() {
     };
   }
 
-  return { fallbackArt, mediaFromBase, extractUserScore, scoreDiagnostics, normalizeCollection, periodFor, buildSession };
+  return { fallbackArt, mediaFromBase, extractUserScore, scoreDiagnostics, normalizeCollection, sourceRevision, periodFor, buildSession };
 }
 
 export type WrappedDomain = ReturnType<typeof createDomain>;
