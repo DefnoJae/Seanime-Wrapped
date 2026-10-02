@@ -29,7 +29,7 @@ In Seanime, add this manifest URL as an extension:
 https://raw.githubusercontent.com/DefnoJae/Seanime-Wrapped/main/manifest.json
 ```
 
-Grant the requested `anilist` and `storage` permissions. The plugin does not request an AniList token, unrestricted network access, filesystem access, command execution, DOM-script manipulation, or social permissions.
+Grant the requested `anilist`, `storage`, and `database` permissions. The database permission is used only to read Seanime's locally stored AniList account username so Wrapped can query that user's public dated AniList list activity; the plugin still does not request the AniList token, unrestricted network access, filesystem access, command execution, DOM-script manipulation, or social permissions.
 
 ## Use
 
@@ -109,9 +109,9 @@ The displayed metric is explicitly labeled **episode progress**, not “episodes
 
 Seanime continuity currently stores the latest watch-history record per media, not a complete historical episode ledger. Therefore:
 
-- A bounded period includes a title only when its Seanime watch-history, AniList start, or AniList completion timestamp falls inside it. AniList `updatedAt` is retained for normalization but never used as evidence of watching, so bulk imports cannot flood recent counts or Top 5 eligibility. Ratings use the deduplicated watched/completed union even when count slides are disabled.
+- A bounded period prioritizes Seanime watch-history, AniList start/completion dates, and dated AniList list activity. Persisted status/progress transitions can fill missing dates, while the tightly limited `updatedAt` fallback is protected against bulk-import patterns. Ratings use the deduplicated watched/completed union even when count slides are disabled.
 - Current progress is useful for engagement ranking but is never claimed as period-specific viewing volume.
-- Completed anime require a supported AniList completion date for bounded periods.
+- Completed anime can qualify through an AniList completion date, dated list activity, Seanime watch evidence at the end of the title, or a newly observed transition to `COMPLETED`.
 - The active weekday slide appears only when genuine continuity timestamps exist. It describes weekdays of latest saved title records, not total episodes watched per weekday.
 - Studio affinity uses available metadata for up to the 15 most engaged titles to avoid unbounded AniList requests.
 - If the available evidence cannot support a section, the viewer omits it or explains the missing value instead of fabricating one.
