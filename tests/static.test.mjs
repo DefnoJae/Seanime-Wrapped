@@ -150,6 +150,16 @@ test("generated viewer document contains syntactically valid runtime JavaScript"
   for (const script of scripts) assert.doesNotThrow(() => new Function(script[1]));
 });
 
+test("long highest-rated titles leave a safe metadata area", () => {
+  assert.match(viewerSource, /const spotlightCopyClass=\(title\)=>String\(title\|\|\"\"\)\.trim\(\)\.length>42\?\"spotlight-copy reveal long-title\":\"spotlight-copy reveal\"/);
+  assert.match(viewerSource, /\.spotlight-copy\.long-title \.spotlight-title\{[^}]*font-size:clamp\(38px,5vw,82px\)[^}]*-webkit-line-clamp:3/);
+  assert.match(viewerSource, /\.spotlight-copy\.long-title \.score\{font-size:clamp\(52px,6\.5vw,96px\)/);
+  assert.match(viewerSource, /\.spotlight-meta\{[^}]*font-size:clamp\(16px,1\.35vw,23px\)[^}]*line-height:1\.35/);
+  assert.match(viewerSource, /\.spotlight-copy\.long-title \.spotlight-meta\{[^}]*padding-bottom:24px/);
+  assert.match(viewerSource, /class=\"'\+spotlightCopyClass\(S\.highestRated\.title\)\+'\"/);
+  assert.match(viewerSource, /class=\"subtitle spotlight-meta\"/);
+});
+
 test("long anime titles clamp cleanly and studio names adapt without truncating", () => {
   assert.match(viewerSource, /\.rank-title\{[^}]*-webkit-line-clamp:3[^}]*overflow:hidden/);
   assert.match(viewerSource, /\.spotlight-title\{[^}]*-webkit-line-clamp:4[^}]*overflow:hidden/);
