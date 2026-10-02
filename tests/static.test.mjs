@@ -150,6 +150,16 @@ test("generated viewer document contains syntactically valid runtime JavaScript"
   for (const script of scripts) assert.doesNotThrow(() => new Function(script[1]));
 });
 
+test("long anime titles clamp cleanly and studio names adapt without truncating", () => {
+  assert.match(viewerSource, /\.rank-title\{[^}]*-webkit-line-clamp:3[^}]*overflow:hidden/);
+  assert.match(viewerSource, /\.spotlight-title\{[^}]*-webkit-line-clamp:4[^}]*overflow:hidden/);
+  assert.match(viewerSource, /const studioNameClass=\(name\)=>\{const length=String\(name\|\|\"\"\)\.trim\(\)\.length;return length>22\?\"studio-name long\":length>14\?\"studio-name medium\":\"studio-name\"\}/);
+  assert.match(viewerSource, /\.studio-name\.medium\{font-size:clamp\(58px,8vw,132px\)/);
+  assert.match(viewerSource, /\.studio-name\.long\{font-size:clamp\(50px,6\.7vw,108px\)/);
+  assert.match(viewerSource, /class=\"'\+studioNameClass\(S\.topStudio\.name\)\+' gradient\"/);
+  assert.doesNotMatch(viewerSource, /\.studio-name\{[^}]*text-overflow:ellipsis/);
+});
+
 test("both winner views have explicit gold styling and large headings have safe line boxes", () => {
   assert.match(viewerSource, /m\.rank===1\?'winner-card'/);
   assert.match(viewerSource, /\.overview-card\.winner-card\{[^}]*border:2px solid #FFD76A/);
