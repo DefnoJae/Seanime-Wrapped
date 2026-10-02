@@ -1,7 +1,7 @@
 {
   "id": "seanime-wrapped",
   "name": "Seanime Wrapped",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "semverConstraint": ">=3.10.2",
   "manifestURI": "https://raw.githubusercontent.com/DefnoJae/Seanime-Wrapped/main/manifest.json",
   "language": "javascript",
@@ -16,7 +16,7 @@
   "plugin": {
     "version": "1",
     "permissions": {
-      "scopes": ["anilist", "storage"]
+      "scopes": ["anilist", "storage", "database"]
     }
   }
 }
