@@ -66,6 +66,15 @@ test("marketplace, viewer, and tray keep independent icon assignments", async ()
   assert.doesNotMatch(indexSource + viewerSource, /WRAPPED_ICON_URL|data:image\/png;base64/i);
 });
 
+test("AniList period activity username lookup has the required database permission", () => {
+  assert.match(indexSource, /\$database\.anilist\.getUsername\(\)/);
+  const scopes = manifest?.plugin?.permissions?.scopes || [];
+  assert.ok(scopes.includes("anilist"));
+  assert.ok(scopes.includes("storage"));
+  assert.ok(scopes.includes("database"));
+  assert.ok(!scopes.includes("anilist-token"), "Wrapped should not need direct access to the AniList token");
+});
+
 test("every generation bypasses stale collection data and manual refresh starts immediately", () => {
   assert.match(indexSource, /getRawAnimeCollection\(true\)/);
   assert.doesNotMatch(indexSource, /getRawAnimeCollection\(forceRefresh\)/);
