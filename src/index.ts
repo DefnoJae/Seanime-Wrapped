@@ -26,7 +26,7 @@ function init() {
     const SOURCE_SNAPSHOT_KEY = "source-snapshot-v1";
     // UI callbacks run in an isolated Goja scope, so tray-only assets must be
     // declared inside this callback rather than captured from module scope.
-    const trayIconUrl = "https://raw.githubusercontent.com/DefnoJae/Seanime-Wrapped/main/assets/icon.svg";
+    const trayIconUrl = "https://raw.githubusercontent.com/DefnoJae/Seanime-Wrapped/main/assets/extension-icon.png";
 
     const defaults: WrappedSettings = {
       period: "month",
