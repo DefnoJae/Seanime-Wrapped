@@ -1,4 +1,4 @@
-// Seanime Wrapped v1.0.14 — generated bundle
+// Seanime Wrapped v1.0.15 — generated bundle
 function createDomain() {
     const fallbackArt = "https://raw.githubusercontent.com/DefnoJae/Seanime-Wrapped/main/assets/fallback.svg";
     const MONTHS = [
@@ -838,7 +838,7 @@ function init() {
                 const activities = [];
                 for (let page = 1; page <= 4; page++) {
                     const result = $anilist.customQuery({
-                        query: "query WrappedListActivity($page: Int, $userId: Int, $start: Int, $end: Int) { Page(page: $page, perPage: 50) { pageInfo { hasNextPage } activities(userId: $userId, type: ANIME_LIST, createdAt_greater: $start, createdAt_lesser: $end, sort: ID_DESC) { ... on ListActivity { mediaId status progress createdAt } } } }",
+                        query: "query WrappedListActivity($page: Int, $userId: Int, $start: Int, $end: Int) { Page(page: $page, perPage: 50) { pageInfo { hasNextPage } activities(userId: $userId, type: ANIME_LIST, createdAt_greater: $start, createdAt_lesser: $end, sort: ID_DESC) { ... on ListActivity { media { id } status progress createdAt } } } }",
                         variables: {
                             page,
                             userId: activityUserId,
@@ -847,7 +847,7 @@ function init() {
                         }
                     }, "");
                     for (const activity of result?.Page?.activities || []) {
-                        const mediaId = Number(activity?.mediaId || 0), createdAt = Number(activity?.createdAt || 0) * 1000;
+                        const mediaId = Number(activity?.media?.id || 0), createdAt = Number(activity?.createdAt || 0) * 1000;
                         if (!mediaId || !createdAt)
                             continue;
                         activities.push({
@@ -864,6 +864,7 @@ function init() {
             }
             catch (cause) {
                 console.warn("Seanime Wrapped AniList activity unavailable", cause);
+                ctx.toast.warning("AniList watch activity could not be loaded. Analytics may be incomplete; try Refresh Data again.");
                 return [];
             }
         }

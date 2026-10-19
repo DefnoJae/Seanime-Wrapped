@@ -5,6 +5,44 @@ import { runInNewContext } from "node:vm";
 
 const bundle = await readFile(new URL("../dist/code.js", import.meta.url), "utf8");
 
+test("native AniList media objects populate analytics across pages and failures surface a warning", () => {
+  const cache=new Map(),factories=new Map(),handlers=new Map(),scheduled=[],warnings=[],pages=[];
+  cache.set('settings-v1',{period:'month',recommendations:false,includeRatings:false});
+  let failActivity=false,html='';
+  const now=Date.now(),at=Math.floor((now-1000)/1000);
+  const entries=[1,2].map(id=>({status:'CURRENT',progress:12,media:{id,type:'ANIME',duration:24,episodes:12,title:{userPreferred:`Anime ${id}`}}}));
+  const components=new Proxy({}, {get:(_,key)=>['onOpen','onClose','close','update','render'].includes(key)?()=>{}:(...args)=>({type:key,args})});
+  const state=value=>({get:()=>value,set:next=>{value=next;}});
+  const ctx={state,fieldRef:current=>({current,onValueChange(){}}),setTimeout:fn=>scheduled.push(fn),eventHandler:(id,fn)=>{handlers.set(id,fn);return id;},newTray:()=>components,
+    newWebview:()=>({setContent(fn){this.content=fn;},update(){html=this.content();},show(){},hide(){},onUnmount(){},channel:{on(){}}}),
+    continuity:{getWatchHistory:()=>({})},toast:{warning:message=>warnings.push(message),info(){},error(message){throw Error(message);}}};
+  const globals={console:{warn(){},error(){}},$shared:{define:(key,fn)=>factories.set(key,fn),use:key=>factories.get(key)()},
+    $storage:{get:key=>cache.get(key),set:(key,value)=>cache.set(key,value),remove:key=>cache.delete(key)},$database:{anilist:{getUsername:()=> 'fixture-user'}},
+    $anilist:{getRawAnimeCollection:()=>({MediaListCollection:{lists:[{entries}]}}),getAnimeDetails:()=>({studios:{nodes:[]}}),
+      customQuery:({query,variables},token)=>{
+        assert.equal(token,'');
+        if(query.includes('WrappedActivityUser'))return {User:{id:42}};
+        assert.match(query,/\.\.\. on ListActivity \{ media \{ id \}/);
+        assert.doesNotMatch(query,/\bmediaId\b/);
+        assert.equal(variables.userId,42);
+        if(failActivity)throw Error('upstream unavailable');
+        pages.push(variables.page);
+        return {Page:{pageInfo:{hasNextPage:variables.page===1},activities:variables.page===1?[
+          {media:{id:1},status:'watched episode',progress:'1 - 3',createdAt:at},
+          {media:null,status:'watched episode',progress:'1',createdAt:at}
+        ]:[{media:{id:1},status:'watched episode',progress:'4',createdAt:at},{media:{id:2},status:'watched episode',progress:'1 - 2',createdAt:at}]}};
+      }} };
+  globals.$ui={register:fn=>runInNewContext(`(${fn.toString()})(ctx)`,{...globals,ctx})};
+  runInNewContext(bundle+'\ninit();',globals);
+  handlers.get('seanime-wrapped-start')();while(scheduled.length)scheduled.shift()();
+  const session=cache.get('last-session-v1');
+  assert.deepEqual(pages,[1,2]);assert.equal(warnings.length,0);
+  assert.equal(session.analytics.anime,2);assert.equal(session.analytics.episodes,6);assert.equal(session.analytics.minutes,144);
+  assert.ok(html.includes('"episodes":6'));
+  failActivity=true;handlers.get('seanime-wrapped-start')();while(scheduled.length)scheduled.shift()();
+  assert.ok(warnings.some(message=>/Analytics may be incomplete/.test(message)));
+});
+
 test("isolated UI always rebuilds from fresh source data and Refresh invalidates derived caches", () => {
   const cache = new Map(), factories = new Map(), handlers = new Map(), channelHandlers = new Map();
   const scheduled = [];

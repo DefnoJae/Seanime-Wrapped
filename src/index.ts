@@ -166,10 +166,10 @@ function init() {
           const result = $anilist.customQuery<{
             Page?: {
               pageInfo?: { hasNextPage?: boolean };
-              activities?: { mediaId?: number; status?: string; progress?: string | null; createdAt?: number }[];
+              activities?: { media?: { id?: number } | null; status?: string; progress?: string | null; createdAt?: number }[];
             };
           }>({
-            query: "query WrappedListActivity($page: Int, $userId: Int, $start: Int, $end: Int) { Page(page: $page, perPage: 50) { pageInfo { hasNextPage } activities(userId: $userId, type: ANIME_LIST, createdAt_greater: $start, createdAt_lesser: $end, sort: ID_DESC) { ... on ListActivity { mediaId status progress createdAt } } } }",
+            query: "query WrappedListActivity($page: Int, $userId: Int, $start: Int, $end: Int) { Page(page: $page, perPage: 50) { pageInfo { hasNextPage } activities(userId: $userId, type: ANIME_LIST, createdAt_greater: $start, createdAt_lesser: $end, sort: ID_DESC) { ... on ListActivity { media { id } status progress createdAt } } } }",
             variables: {
               page,
               userId: activityUserId,
@@ -178,7 +178,7 @@ function init() {
             }
           }, "");
           for (const activity of result?.Page?.activities || []) {
-            const mediaId = Number(activity?.mediaId || 0), createdAt = Number(activity?.createdAt || 0) * 1000;
+            const mediaId = Number(activity?.media?.id || 0), createdAt = Number(activity?.createdAt || 0) * 1000;
             if (!mediaId || !createdAt) continue;
             activities.push({
               mediaId,
@@ -192,6 +192,7 @@ function init() {
         return activities;
       } catch (cause) {
         console.warn("Seanime Wrapped AniList activity unavailable", cause);
+        ctx.toast.warning("AniList watch activity could not be loaded. Analytics may be incomplete; try Refresh Data again.");
         return [];
       }
     }
