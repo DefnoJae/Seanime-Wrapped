@@ -100,6 +100,26 @@ export interface GenreStat {
   percentage: number;
 }
 
+export interface AnalyticsBucket {
+  start: number;
+  end: number;
+  anime: number;
+  episodes: number;
+  minutes: number;
+  timedEpisodes: number;
+  titles: string[];
+}
+
+export interface WatchAnalytics {
+  daily: AnalyticsBucket[];
+  weekly: AnalyticsBucket[];
+  anime: number;
+  episodes: number;
+  minutes: number;
+  timedEpisodes: number;
+  background: string;
+}
+
 export interface WrappedSession {
   version: 1;
   generatedAt: string;
@@ -114,6 +134,7 @@ export interface WrappedSession {
   topStudio: { name: string; anime: MediaRecord[] } | null;
   averageScore: number | null;
   activeDay: { label: string; count: number; interpretation: string } | null;
+  analytics?: WatchAnalytics;
   recommendations: Recommendation[];
   heroArt: string[];
   summary: string[];
@@ -523,6 +544,72 @@ export function createDomain() {
     return selected;
   }
 
+  function watchAnalytics(all: MediaRecord[], period: ReturnType<typeof periodFor>, context: PeriodActivityContext = {}): WatchAnalytics {
+    // AniList ranges describe episodes watched in an activity, unlike cumulative
+    // collection progress. Seanime continuity is only the latest record per title.
+    const events: { media: MediaRecord; at: number; episodes: number[] }[] = [];
+    const byId: Record<number, MediaRecord> = {};
+    for (const media of all) byId[media.mediaId] = media;
+    for (const activity of context.listActivities || []) {
+      const media = byId[activity.mediaId];
+      if (!media || !inWindow(activity.createdAt, period) || !/watched episode|completed/i.test(activity.status)) continue;
+      const match = String(activity.progress || "").trim().match(/^(\d+)(?:\s*-\s*(\d+))?$/);
+      const episodes: number[] = [];
+      if (match && /watched episode/i.test(activity.status)) {
+        const first = Number(match[1]), last = Number(match[2] || match[1]);
+        if (first > 0 && last >= first && last - first < 2000 && (!media.episodes || last <= media.episodes)) {
+          for (let episode = first; episode <= last; episode++) episodes.push(episode);
+        }
+      }
+      events.push({ media, at: activity.createdAt, episodes });
+    }
+    for (const media of all) {
+      if (inWindow(media.historyAt, period)) events.push({ media, at: media.historyAt!, episodes: [] });
+    }
+    events.sort((a, b) => a.at - b.at);
+    const dayStart = (at: number) => { const date = new Date(at); return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime(); };
+    const nextDay = (at: number) => { const date = new Date(at); return new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1).getTime(); };
+    const start = dayStart(period.start ?? events[0]?.at ?? period.end);
+    const days: Record<number, { ids: Set<number>; episodeIds: Set<string>; bucket: AnalyticsBucket }> = {};
+    for (let at = start; at <= period.end; at = nextDay(at)) {
+      days[at] = { ids: new Set(), episodeIds: new Set(), bucket: { start: at, end: Math.min(nextDay(at) - 1, period.end), anime: 0, episodes: 0, minutes: 0, timedEpisodes: 0, titles: [] } };
+    }
+    const totalIds = new Set<number>(), counts: Record<number, number> = {};
+    for (const event of events) {
+      const day = days[dayStart(event.at)];
+      if (!day) continue;
+      const id = event.media.mediaId;
+      if (!day.ids.has(id)) { day.ids.add(id); day.bucket.titles.push(event.media.title); counts[id] = (counts[id] || 0) + 1; }
+      totalIds.add(id);
+      for (const episode of event.episodes) {
+        const key = `${id}:${episode}`;
+        // Duplicate activity responses on the same day are counted once.
+        if (day.episodeIds.has(key)) continue;
+        day.episodeIds.add(key);
+        day.bucket.episodes++;
+        if (event.media.duration && event.media.duration > 0) { day.bucket.minutes += event.media.duration; day.bucket.timedEpisodes++; }
+      }
+      day.bucket.anime = day.ids.size;
+    }
+    const daily = Object.keys(days).map(Number).sort((a, b) => a - b).map(at => days[at].bucket);
+    const weekly: AnalyticsBucket[] = [];
+    // Calendar weeks start Monday; union IDs rather than summing daily titles.
+    for (const bucket of daily) {
+      const date = new Date(bucket.start);
+      const monday = new Date(date.getFullYear(), date.getMonth(), date.getDate() - (date.getDay() + 6) % 7).getTime();
+      let week = weekly[weekly.length - 1];
+      if (!week || week.start !== Math.max(start, monday)) { week = { start: Math.max(start, monday), end: bucket.end, anime: 0, episodes: 0, minutes: 0, timedEpisodes: 0, titles: [] }; weekly.push(week); }
+      week.end = bucket.end; week.episodes += bucket.episodes; week.minutes += bucket.minutes; week.timedEpisodes += bucket.timedEpisodes;
+    }
+    for (const week of weekly) {
+      const ids = new Set<number>();
+      for (const at of Object.keys(days).map(Number)) if (at >= week.start && at <= week.end) for (const id of days[at].ids) ids.add(id);
+      week.anime = ids.size; week.titles = Array.from(ids).map(id => byId[id].title);
+    }
+    const backgroundId = Object.keys(counts).map(Number).sort((a, b) => counts[b] - counts[a] || a - b)[0];
+    return { daily, weekly, anime: totalIds.size, episodes: daily.reduce((sum, day) => sum + day.episodes, 0), minutes: daily.reduce((sum, day) => sum + day.minutes, 0), timedEpisodes: daily.reduce((sum, day) => sum + day.timedEpisodes, 0), background: backgroundId ? byId[backgroundId].banner || byId[backgroundId].cover : fallbackArt };
+  }
+
   function buildSession(all: MediaRecord[], details: Record<number, StudioMetadata>, discovery: MediaRecord[], settings: WrappedSettings, nowValue?: number, activityContext: PeriodActivityContext = {}): WrappedSession {
     const period = periodFor(settings.period, nowValue);
     const evidence = periodActivity(all, period, activityContext);
@@ -566,6 +653,7 @@ export function createDomain() {
       topStudio: studio,
       averageScore,
       activeDay: day,
+      analytics: settings.includeWatched ? watchAnalytics(all, period, activityContext) : undefined,
       recommendations: recs,
       heroArt: heroArt.length ? Array.from(new Set(heroArt)) : [fallbackArt],
       summary,
@@ -573,7 +661,7 @@ export function createDomain() {
     };
   }
 
-  return { fallbackArt, mediaFromBase, extractUserScore, scoreDiagnostics, normalizeCollection, sourceRevision, buildSourceSnapshot, periodFor, periodActivity, buildSession };
+  return { fallbackArt, mediaFromBase, extractUserScore, scoreDiagnostics, normalizeCollection, sourceRevision, buildSourceSnapshot, periodFor, periodActivity, watchAnalytics, buildSession };
 }
 
 export type WrappedDomain = ReturnType<typeof createDomain>;

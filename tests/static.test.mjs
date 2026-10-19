@@ -171,7 +171,8 @@ test("both winner views have explicit gold styling and large headings have safe 
   assert.match(viewerSource, /m\.rank===1\?'winner-card'/);
   assert.match(viewerSource, /\.overview-card\.winner-card\{[^}]*border:2px solid #FFD76A/);
   assert.match(viewerSource, /\.winner \.rank-number\{color:#FFD76A/);
-  assert.match(viewerSource, /\.display,\.mega,\.genre-name,\.rank-number,\.rank-title,\.spotlight-title,\.studio-name,\.final h1\{line-height:1\.12;[^}]*overflow:visible/);
+  assert.match(viewerSource, /\.display,\.mega,\.genre-name,\.rank-number,\.final h1\{line-height:1\.12;[^}]*overflow:visible/);
+  assert.match(viewerSource, /\.rank-title,\.spotlight-title,\.studio-name\{padding-top:\.04em;padding-bottom:\.1em/);
   assert.doesNotMatch(viewerSource, /line-height:\.(?:7\d*|8\d*)(?:;|\})/);
 });
 

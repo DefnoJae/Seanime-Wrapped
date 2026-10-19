@@ -12,6 +12,15 @@ Seanime Wrapped is a desktop-first, cinematic personal anime recap for [Seanime]
 - Slide-scoped artwork loading with a small look-ahead buffer, segmented progress, click/keyboard navigation, pause/resume, reduced-motion support, and deterministic cleanup
 - Immediate staged generation feedback in the drawer while library, statistics, Top 5, and recommendations are prepared
 - A silent viewer with no media playback or external streaming dependency
+- A watch-activity chart immediately before recommendations, with Daily/Weekly and Anime/Episodes/Hours controls. Hover, focus, or tap points for dates, titles, recorded episodes, and estimated hours; auto-advance waits while you interact with the slide.
+
+### Watch analytics
+
+The chart uses dated AniList watch/completion activities and Seanime's latest saved watch record per title. Daily and Monday-based weekly title counts are distinct within each bucket, so weekly counts do not add duplicate titles across days. The same title can appear in multiple buckets.
+
+Only explicit watched-episode numbers or ranges contribute to episode totals. Collection progress, completion status, and the episode number in a partially watched continuity record are never treated as episodes watched on that date. Repeated episode entries on the same day are counted once. Hours are estimates from those episodes and known anime runtimes; missing runtimes are excluded rather than guessed. These are available-record totals, not a complete viewing ledger: AniList queries retrieve up to 200 activities, and Seanime only exposes the latest continuity record per title. An empty bucket means no recorded activity, and all-time analytics use the dated records available locally. The chart uses the generation environment's calendar dates, matching the existing recap periods.
+
+The background stays on artwork from the anime with the most recorded active days in the selected period, using Wrapped's existing blur and overlays. With no dated activity, it uses the existing fallback artwork.
 
 ## Requirements
 
